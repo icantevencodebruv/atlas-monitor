@@ -1,4 +1,4 @@
-# Hugo/Leon Offline Recorder + Diarized Transcription
+# atlas-monitor Offline Recorder + Diarized Transcription
 
 Fully offline, localhost-only recorder with incremental transcription and speaker diarization into **Hugo** and **Leon**.
 
