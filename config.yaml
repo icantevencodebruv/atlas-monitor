@@ -1,0 +1,51 @@
+app:
+  host: "127.0.0.1"
+  port: 7070
+  open_browser: true
+storage:
+  db_path: "./data/app.db"
+  audio_dir: "./data/audio"
+  exports_dir: "./data/exports"
+  logs_dir: "./data/logs"
+audio:
+  sample_rate: 16000
+  channels: 1
+  segment_seconds: 30
+  device_hostapi_preference:
+    windows: "WASAPI"
+    macos: "Core Audio"
+work_hours:
+  timezone: "Europe/Berlin"
+  enabled: true
+  work_days: [MON, TUE, WED, THU, FRI]
+  work_start: "09:00"
+  work_end: "18:00"
+asr:
+  backend: "auto" # auto|windows_nemo_parakeet_cuda|mac_parakeet_mlx|whisper_cpp
+  required_languages: ["de", "en"]
+  windows_nemo_parakeet_cuda:
+    model_name: "" # set to a local .nemo path or model name
+    languages: ["en"]
+  mac_parakeet_mlx:
+    model_id: "mlx-community/parakeet-tdt-0.6b-v3"
+    hf_cache_dir: "./models/parakeet_mlx"
+    hf_cache_dir_parent: "./models"
+    hf_offline: false
+    languages: ["en", "de"]
+  whisper_cpp:
+    model_path: "./models/ggml-large-v3.bin"
+    language: "auto"
+    binary_path: "" # optional path to whisper.cpp CLI binary
+    model_url: "" # optional URL override for offline bundling
+transcription:
+  vad_aggressiveness: 2
+  min_utterance_sec: 0.6
+  max_utterance_sec: 30.0
+  max_silence_sec: 0.8
+  enrollment_seconds: 30
+retry:
+  enabled: true
+  max_attempts: 5
+  base_backoff_sec: 30
+  max_backoff_sec: 900
+  poll_interval_sec: 15

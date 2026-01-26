@@ -1,0 +1,49 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$SCRIPT_DIR"
+for _ in 1 2 3 4 5 6 7; do
+  if [ -f "$ROOT/run.py" ]; then
+    break
+  fi
+  ROOT="$(dirname "$ROOT")"
+  if [ "$ROOT" = "/" ]; then
+    break
+  fi
+done
+
+if [ ! -f "$ROOT/run.py" ]; then
+  osascript -e 'display dialog "Recorder root not found. Keep the app inside the project folder." buttons {"OK"} with icon stop'
+  exit 1
+fi
+
+PLIST="$HOME/Library/LaunchAgents/com.hugoleon.recorder.plist"
+RUN_SCRIPT="$ROOT/tools/macos_installer/run_app.sh"
+
+if [ ! -f "$PLIST" ]; then
+  cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hugoleon.recorder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$RUN_SCRIPT</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+EOF
+fi
+
+if ! launchctl list | grep -q "com.hugoleon.recorder"; then
+  launchctl load "$PLIST" >/dev/null 2>&1 || true
+fi
+
+open "http://127.0.0.1:7070"

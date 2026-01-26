@@ -1,0 +1,98 @@
+import os
+from typing import List, Optional
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class AppConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 7070
+    open_browser: bool = True
+
+
+class StorageConfig(BaseModel):
+    db_path: str = "./data/app.db"
+    audio_dir: str = "./data/audio"
+    exports_dir: str = "./data/exports"
+    logs_dir: str = "./data/logs"
+
+
+class AudioConfig(BaseModel):
+    sample_rate: int = 16000
+    channels: int = 1
+    segment_seconds: int = 30
+    device_hostapi_preference: dict = Field(default_factory=dict)
+
+
+class WorkHoursConfig(BaseModel):
+    timezone: str = "Europe/Berlin"
+    enabled: bool = True
+    work_days: List[str] = ["MON", "TUE", "WED", "THU", "FRI"]
+    work_start: str = "09:00"
+    work_end: str = "18:00"
+
+
+class NemoConfig(BaseModel):
+    model_name: str = ""
+    languages: List[str] = ["en"]
+
+
+class MlxConfig(BaseModel):
+    model_id: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    hf_cache_dir: str = "./models/parakeet_mlx"
+    hf_cache_dir_parent: str = "./models"
+    hf_offline: bool = False
+    languages: List[str] = ["en", "de"]
+
+
+class WhisperCppConfig(BaseModel):
+    model_path: str = "./models/ggml-large-v3.bin"
+    language: str = "auto"
+    binary_path: str = ""
+
+
+class ASRConfig(BaseModel):
+    backend: str = "auto"
+    required_languages: List[str] = ["de", "en"]
+    windows_nemo_parakeet_cuda: NemoConfig = Field(default_factory=NemoConfig)
+    mac_parakeet_mlx: MlxConfig = Field(default_factory=MlxConfig)
+    whisper_cpp: WhisperCppConfig = Field(default_factory=WhisperCppConfig)
+
+
+class TranscriptionConfig(BaseModel):
+    vad_aggressiveness: int = 2
+    min_utterance_sec: float = 0.6
+    max_utterance_sec: float = 30.0
+    max_silence_sec: float = 0.8
+    enrollment_seconds: int = 30
+
+
+class RetryConfig(BaseModel):
+    enabled: bool = True
+    max_attempts: int = 5
+    base_backoff_sec: int = 30
+    max_backoff_sec: int = 900
+    poll_interval_sec: int = 15
+
+
+class Config(BaseModel):
+    app: AppConfig = Field(default_factory=AppConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
+    work_hours: WorkHoursConfig = Field(default_factory=WorkHoursConfig)
+    asr: ASRConfig = Field(default_factory=ASRConfig)
+    transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+    retry: RetryConfig = Field(default_factory=RetryConfig)
+
+
+def load_config(path: str) -> Config:
+    if not os.path.exists(path):
+        cfg = Config()
+        cfg.app.host = "127.0.0.1"
+        return cfg
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    cfg = Config.model_validate(data)
+    cfg.app.host = "127.0.0.1"
+    return cfg
