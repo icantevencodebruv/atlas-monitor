@@ -1,8 +1,40 @@
-# atlas-monitor Offline Recorder + Diarized Transcription
+<pre>
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃   █████╗ ████████╗██╗      █████╗ ███████╗     ███╗   ███╗ ██████╗      ┃
+    ┃  ██╔══██╗╚══██╔══╝██║     ██╔══██╗██╔════╝     ████╗ ████║██╔═══██╗     ┃
+    ┃  ███████║   ██║   ██║     ███████║███████╗     ██╔████╔██║██║   ██║     ┃
+    ┃  ██╔══██║   ██║   ██║     ██╔══██║╚════██║     ██║╚██╔╝██║██║   ██║     ┃
+    ┃  ██║  ██║   ██║   ███████╗██║  ██║███████║     ██║ ╚═╝ ██║╚██████╔╝     ┃
+    ┃  ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚══════╝     ╚═╝     ╚═╝ ╚═════╝      ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-Fully offline, localhost-only recorder with incremental transcription and speaker diarization into **Hugo** and **Leon**.
+      REAL-TIME OFFLINE RECORDER + DIARIZED TRANSCRIPTION  •  127.0.0.1 ONLY
+                        de/en diarization locked to Hugo + Leon
 
-## Features (non-negotiables)
+                         .--------------------.
+                        /   .--------------.   \
+                       |   /   .------.     \   |
+                       |  |   /  /\    \     |  |
+                       |  |   | |  |   |     |  |
+                       |  |   \  \/   /      |  |
+                       |   \   '------'     /   |
+                        \   '--------------'   /
+                         '--------.  .--------'
+                                  |  |
+                                  |  |
+                                  |  |
+                               ___|__|___
+                              /__________\
+</pre>
+
+**Last update:** 27.01.2026
+
+Offline-only recorder with incremental transcription + diarization, built for two fixed speakers (Hugo, Leon) and a minimal local UI. No telemetry, no network calls at runtime.
+
+---
+
+## Features (Non‑Negotiables)
+
 - Offline only at runtime (no network calls, no telemetry).
 - Localhost only (`127.0.0.1`).
 - Minimal UI with status + Start/Stop.
@@ -13,16 +45,22 @@ Fully offline, localhost-only recorder with incremental transcription and speake
 - Range exports: last 30m, last 60m, today (Europe/Berlin), session, custom.
 - Output format: classic dialogue lines.
 
-## Quick start (dev)
+---
+
+## Quick Start (Dev)
+
 ```bash
 python -m venv .venv
-.venv\\Scripts\\pip install -r requirements.txt
-.venv\\Scripts\\python run.py
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python run.py
 ```
 
 Open: `http://127.0.0.1:7070`
 
+---
+
 ## Configuration
+
 Edit `config.yaml`.
 
 Key sections:
@@ -31,7 +69,8 @@ Key sections:
 - `work_hours`: timezone and schedule
 - `audio.segment_seconds`: 30 or 60 recommended
 
-### Backend selection behavior
+### Backend Selection Behavior
+
 1. If `asr.backend` is explicit, it is attempted first.
 2. Auto-selection:
    - Windows: NeMo Parakeet on CUDA if available.
@@ -39,22 +78,32 @@ Key sections:
    - Otherwise: `whisper.cpp`.
 3. If the selected backend does **not** support German+English, it falls back to `whisper.cpp`.
 
-## Speaker enrollment
-Go to `http://127.0.0.1:7070/setup` and enroll Hugo + Leon (20-40 seconds each).
+---
+
+## Speaker Enrollment
+
+Go to `http://127.0.0.1:7070/setup` and enroll Hugo + Leon (20–40 seconds each).
 
 Embeddings are stored in SQLite and used for diarization.
 
-## Offline bundle (airgapped deployment)
+---
+
+## Offline Bundle (Airgapped Deployment)
+
 On a connected machine:
+
 ```bash
 python tools/offline_bundle/build_bundle.py --output offline_bundle
 ```
+
 To include dev/test wheels:
+
 ```bash
 python tools/offline_bundle/build_bundle.py --output offline_bundle --include-dev
 ```
 
 This produces:
+
 ```
 offline_bundle/
   app_source/    # full source tree
@@ -65,6 +114,7 @@ offline_bundle/
 Copy `offline_bundle` to the airgapped Mac Studio.
 
 On the Mac Studio:
+
 ```bash
 cd offline_bundle/app_source
 cp -R ../wheelhouse .
@@ -79,8 +129,14 @@ For airgapped Parakeet MLX:
   - `asr.mac_parakeet_mlx.hf_cache_dir_parent`
   - `asr.mac_parakeet_mlx.hf_offline: true`
 
-## Windows installer (double click)
+---
+
+## Installers
+
+### Windows (double click)
+
 From File Explorer, double click:
+
 ```
 tools/windows_installer/install.bat
 ```
@@ -91,7 +147,8 @@ This:
 - Sets a Scheduled Task for auto-start on login
 - Launches the app immediately
 
-## macOS installer (LaunchAgent)
+### macOS (LaunchAgent)
+
 ```bash
 chmod +x tools/macos_installer/install.sh
 chmod +x tools/macos_installer/run_app.sh
@@ -100,14 +157,21 @@ tools/macos_installer/install.sh
 
 This installs a LaunchAgent at login and starts the server.
 
-## macOS .app launcher
+### macOS .app Launcher
+
 Double click `tools/macos_installer/HugoLeon Launcher.app` to start the LaunchAgent (if needed) and open the UI.
 Keep the app inside the project folder so it can find `run.py`.
 
-## Admin (failed segments)
+---
+
+## Admin (Failed Segments)
+
 Open `http://127.0.0.1:7070/admin` to review failed segments, retry, export raw audio ZIPs, or delete.
 
-## Data layout
+---
+
+## Data Layout
+
 ```
 data/
   app.db
@@ -116,14 +180,20 @@ data/
   audio/        # segments are deleted after transcription
 ```
 
+---
+
 ## Tests
+
 ```bash
 python -m venv .venv
-.venv\\Scripts\\pip install -r requirements.txt -r requirements-dev.txt
+.venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest
 ```
 
-## Notes on ASR backends
+---
+
+## Notes on ASR Backends
+
 - `windows_nemo_parakeet_cuda`: requires NVIDIA GPU + NeMo ASR.
 - `mac_parakeet_mlx`: requires MLX + `parakeet_mlx` Python module (configure in `config.yaml`).
 - `whisper_cpp`: requires a local `ggml` model file + `whisper.cpp` binary or `whispercpp` Python package.

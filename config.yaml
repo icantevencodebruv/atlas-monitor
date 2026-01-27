@@ -21,7 +21,7 @@ work_hours:
   work_start: "09:00"
   work_end: "18:00"
 asr:
-  backend: "auto" # auto|windows_nemo_parakeet_cuda|mac_parakeet_mlx|whisper_cpp
+  backend: "whisper_cpp" # auto|windows_nemo_parakeet_cuda|mac_parakeet_mlx|whisper_cpp
   required_languages: ["de", "en"]
   windows_nemo_parakeet_cuda:
     model_name: "" # set to a local .nemo path or model name
@@ -33,9 +33,9 @@ asr:
     hf_offline: false
     languages: ["en", "de"]
   whisper_cpp:
-    model_path: "./models/ggml-large-v3.bin"
+    model_path: "./models/ggml-small.bin"
     language: "auto"
-    binary_path: "" # optional path to whisper.cpp CLI binary
+    binary_path: "/opt/homebrew/bin/whisper-cli" # optional path to whisper.cpp CLI binary
     model_url: "" # optional URL override for offline bundling
 transcription:
   vad_aggressiveness: 2

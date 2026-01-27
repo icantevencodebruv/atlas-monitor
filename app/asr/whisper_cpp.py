@@ -40,13 +40,29 @@ class WhisperCppBackend(ASRBackend):
     def _transcribe_with_python(self, wav_path: str) -> Optional[str]:
         try:
             import whispercpp
+            model_name = None
+            if os.path.exists(self.model_path):
+                # Map ggml model filenames to whispercpp model names when possible.
+                name = os.path.basename(self.model_path)
+                if name.startswith("ggml-") and name.endswith(".bin"):
+                    model_name = name.replace("ggml-", "").replace(".bin", "")
+                    # whispercpp supports these canonical names.
+                    if model_name not in whispercpp.utils.MODELS_URL:
+                        model_name = None
+            else:
+                model_name = self.model_path
 
-            model = whispercpp.Whisper(self.model_path)
-            result = model.transcribe(wav_path, language=None if self.language == "auto" else self.language)
+            if model_name:
+                model = whispercpp.Whisper.from_pretrained(model_name)
+                result = model.transcribe_from_file(wav_path)
+            else:
+                # Unsupported local model for python backend.
+                return None
             if isinstance(result, dict) and "text" in result:
                 return str(result["text"]).strip()
             return str(result).strip()
-        except Exception:
+        except Exception as exc:
+            logger.warning("whispercpp python backend failed: %s", exc)
             return None
 
     def _transcribe_with_cli(self, wav_path: str) -> str:
@@ -56,7 +72,7 @@ class WhisperCppBackend(ASRBackend):
         if not os.path.exists(self.model_path):
             raise RuntimeError("whisper.cpp model not found.")
         with tempfile.TemporaryDirectory() as tmpdir:
-            json_path = os.path.join(tmpdir, "out.json")
+            json_prefix = os.path.join(tmpdir, "out")
             cmd = [
                 binary,
                 "-m",
@@ -65,16 +81,29 @@ class WhisperCppBackend(ASRBackend):
                 wav_path,
                 "-oj",
                 "-of",
-                json_path,
+                json_prefix,
             ]
             if self.language:
                 cmd.extend(["-l", self.language])
             logger.info("Running whisper.cpp CLI.")
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            json_path = json_prefix + ".json"
             if os.path.exists(json_path):
                 with open(json_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                return str(data.get("text", "")).strip()
+                text = data.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+                # whisper.cpp JSON schema (newer) stores segments under "transcription".
+                if isinstance(data.get("transcription"), list):
+                    parts = []
+                    for item in data["transcription"]:
+                        if isinstance(item, dict):
+                            seg_text = item.get("text")
+                            if isinstance(seg_text, str) and seg_text.strip():
+                                parts.append(seg_text.strip())
+                    if parts:
+                        return " ".join(parts).strip()
         return ""
 
     def transcribe(self, wav_path: str) -> str:
