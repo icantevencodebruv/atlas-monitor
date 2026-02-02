@@ -39,7 +39,7 @@ Offline-only recorder with incremental transcription + diarization, built for tw
 - Localhost only (`127.0.0.1`).
 - Minimal UI with status + Start/Stop.
 - Mixed language transcription (German + English).
-- Diarization always labels **Hugo** or **Leon**.
+- Diarization labels **Hugo** or **Leon**; Auto mode can emit **Unknown** when below confidence.
 - Work-hours scheduling with manual override.
 - Raw audio deleted after successful transcription.
 - Range exports: last 30m, last 60m, today (Europe/Berlin), session, custom.
@@ -85,6 +85,19 @@ Key sections:
 Go to `http://127.0.0.1:7070/setup` and enroll Hugo + Leon (20–40 seconds each).
 
 Embeddings are stored in SQLite and used for diarization.
+
+### Speaker Lock + Confidence Gate (New)
+
+- UI toggle on `/`: **Auto / Hugo only / Leon only**
+- Auto mode uses a confidence gate and will label **Unknown** if thresholds are not met.
+- Auto mode can require both speakers to be enrolled (configurable).
+
+Relevant config (see `config.yaml`):
+
+- `diarization.max_distance`
+- `diarization.min_margin`
+- `diarization.require_both_enrolled`
+- `diarization.enrollment_min_snr_db`
 
 ---
 

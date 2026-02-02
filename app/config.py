@@ -68,6 +68,13 @@ class TranscriptionConfig(BaseModel):
     enrollment_seconds: int = 30
 
 
+class DiarizationConfig(BaseModel):
+    max_distance: float = 0.25
+    min_margin: float = 0.05
+    require_both_enrolled: bool = True
+    enrollment_min_snr_db: float = 12.0
+
+
 class RetryConfig(BaseModel):
     enabled: bool = True
     max_attempts: int = 5
@@ -83,6 +90,7 @@ class Config(BaseModel):
     work_hours: WorkHoursConfig = Field(default_factory=WorkHoursConfig)
     asr: ASRConfig = Field(default_factory=ASRConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+    diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 

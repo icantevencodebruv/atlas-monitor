@@ -9,6 +9,7 @@ from app.services.audio_utils import write_wav_int16
 from app.services.diarization import SpeakerIdentifier
 from app.services.transcription import TranscriptionWorker
 from app.services.vad import VadSegment
+from app.state import AppState
 import app.services.transcription as transcription_mod
 
 
@@ -42,7 +43,7 @@ def test_audio_deleted_after_processing(tmp_path):
     original = transcription_mod.vad_split
     transcription_mod.vad_split = lambda *args, **kwargs: [VadSegment(0.0, 1.0)]
     try:
-        worker = TranscriptionWorker(db, None, DummyBackendSuccess(), diarizer, Config())
+        worker = TranscriptionWorker(db, None, DummyBackendSuccess(), diarizer, Config(), AppState())
         worker._process_segment(segment_id)
     finally:
         transcription_mod.vad_split = original
@@ -63,7 +64,7 @@ def test_audio_kept_on_failure(tmp_path):
     original = transcription_mod.vad_split
     transcription_mod.vad_split = lambda *args, **kwargs: [VadSegment(0.0, 1.0)]
     try:
-        worker = TranscriptionWorker(db, None, DummyBackendFail(), diarizer, Config())
+        worker = TranscriptionWorker(db, None, DummyBackendFail(), diarizer, Config(), AppState())
         worker._process_segment(segment_id)
     finally:
         transcription_mod.vad_split = original

@@ -43,6 +43,11 @@ transcription:
   max_utterance_sec: 30.0
   max_silence_sec: 0.8
   enrollment_seconds: 30
+diarization:
+  max_distance: 0.25
+  min_margin: 0.05
+  require_both_enrolled: true
+  enrollment_min_snr_db: 12.0
 retry:
   enabled: true
   max_attempts: 5

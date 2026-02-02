@@ -30,14 +30,23 @@ class SpeakerIdentifier:
     def set_embedding(self, speaker: str, vector: np.ndarray) -> None:
         self._embeddings[speaker] = vector.astype(np.float32)
 
-    def assign(self, embedding: np.ndarray) -> str:
-        if not self._embeddings:
-            return "Hugo"
-        best_speaker = None
-        best_score = float("inf")
+    def has_embedding(self, speaker: str) -> bool:
+        emb = self._embeddings.get(speaker)
+        return emb is not None and emb.size > 0
+
+    def best_match(self, embedding: np.ndarray) -> tuple[Optional[str], float, float]:
+        scores = []
         for speaker, ref in self._embeddings.items():
-            score = cosine_distance(embedding, ref)
-            if score < best_score:
-                best_score = score
-                best_speaker = speaker
-        return best_speaker or "Hugo"
+            if ref is None or ref.size == 0:
+                continue
+            scores.append((speaker, cosine_distance(embedding, ref)))
+        if not scores:
+            return None, float("inf"), float("inf")
+        scores.sort(key=lambda item: item[1])
+        best_speaker, best_score = scores[0]
+        second_score = scores[1][1] if len(scores) > 1 else float("inf")
+        return best_speaker, best_score, second_score
+
+    def assign(self, embedding: np.ndarray) -> str:
+        best_speaker, _, _ = self.best_match(embedding)
+        return best_speaker or "Unknown"

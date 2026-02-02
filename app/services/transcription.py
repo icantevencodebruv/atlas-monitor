@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from queue import Queue, Empty
 from typing import List
 
+import numpy as np
+
 from app.db.database import Database
 from app.services.audio_utils import read_wav_int16, write_wav_int16
 from app.services.diarization import SpeakerIdentifier, compute_embedding
@@ -21,12 +23,14 @@ class TranscriptionWorker:
         asr_backend,
         diarizer: SpeakerIdentifier,
         config,
+        state,
     ):
         self._db = db
         self._queue = queue
         self._backend = asr_backend
         self._diarizer = diarizer
         self._config = config
+        self._state = state
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -75,7 +79,7 @@ class TranscriptionWorker:
             if chunk.size == 0:
                 continue
             emb = compute_embedding(chunk, sample_rate)
-            speaker = self._diarizer.assign(emb)
+            speaker = self._select_speaker(emb)
 
             chunk_path = file_path + f".{start}_{end}.wav"
             write_wav_int16(chunk_path, chunk, sample_rate)
@@ -111,3 +115,22 @@ class TranscriptionWorker:
 
         self._db.update_segment_status(segment_id, "done")
         os.remove(file_path)
+
+    def _select_speaker(self, embedding: np.ndarray) -> str:
+        lock_mode = getattr(self._state, "speaker_lock", "auto")
+        if lock_mode == "hugo":
+            return "Hugo"
+        if lock_mode == "leon":
+            return "Leon"
+        if self._config.diarization.require_both_enrolled:
+            if not (self._diarizer.has_embedding("Hugo") and self._diarizer.has_embedding("Leon")):
+                return "Unknown"
+        best_speaker, best_score, second_score = self._diarizer.best_match(embedding)
+        if not best_speaker:
+            return "Unknown"
+        margin = second_score - best_score
+        if best_score > self._config.diarization.max_distance:
+            return "Unknown"
+        if margin < self._config.diarization.min_margin:
+            return "Unknown"
+        return best_speaker
