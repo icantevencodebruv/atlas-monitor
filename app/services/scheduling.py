@@ -53,15 +53,21 @@ class WorkHoursScheduler:
             logger.info("Scheduler starting recorder.")
             self._recorder.start()
             self._state.recording = True
+            self._state.recording_since = datetime.now(timezone.utc).isoformat()
             if self._state.current_session_id is None:
                 self._state.current_session_id = self._db.add_session(datetime.now(timezone.utc).isoformat())
         if not desired and self._state.recording:
             logger.info("Scheduler stopping recorder.")
             self._recorder.stop()
             self._state.recording = False
+            self._state.recording_since = None
+            self._state.last_segment_start = None
             if self._state.current_session_id is not None:
                 self._db.end_session(self._state.current_session_id, datetime.now(timezone.utc).isoformat())
                 self._state.current_session_id = None
+
+    def tick(self) -> None:
+        self._tick()
 
 
 def is_within_work_hours(cfg, now: datetime) -> bool:

@@ -38,7 +38,8 @@ class Database:
                     start_ts TEXT NOT NULL,
                     end_ts TEXT NOT NULL,
                     speaker TEXT NOT NULL,
-                    text TEXT NOT NULL
+                    text TEXT NOT NULL,
+                    low_confidence INTEGER DEFAULT 0
                 )
                 """
             )
@@ -82,6 +83,10 @@ class Database:
                 self._conn.execute("ALTER TABLE segments ADD COLUMN attempts INTEGER DEFAULT 0")
             if "last_attempt_at" not in cols:
                 self._conn.execute("ALTER TABLE segments ADD COLUMN last_attempt_at TEXT")
+            cur = self._conn.execute("PRAGMA table_info(transcripts)")
+            cols = {row["name"] for row in cur.fetchall()}
+            if "low_confidence" not in cols:
+                self._conn.execute("ALTER TABLE transcripts ADD COLUMN low_confidence INTEGER DEFAULT 0")
 
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -149,8 +154,8 @@ class Database:
         with self._lock, self._conn:
             self._conn.executemany(
                 """
-                INSERT INTO transcripts (segment_id, start_ts, end_ts, speaker, text)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO transcripts (segment_id, start_ts, end_ts, speaker, text, low_confidence)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -159,6 +164,7 @@ class Database:
                         row["end_ts"],
                         row["speaker"],
                         row["text"],
+                        int(bool(row.get("low_confidence"))),
                     )
                     for row in rows
                 ],
@@ -197,6 +203,13 @@ class Database:
             return None
         return json.loads(row["vector"])
 
+    def clear_embedding(self, speaker: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM embeddings WHERE speaker = ?",
+                (speaker,),
+            )
+
     def add_session(self, start_ts: str) -> int:
         with self._lock, self._conn:
             cur = self._conn.execute(
@@ -228,6 +241,18 @@ class Database:
                 (self._utc_now(), range_label, start_ts, end_ts, file_path),
             )
             return int(cur.lastrowid)
+
+    def list_exports(self, limit: int = 10) -> List[sqlite3.Row]:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM exports
+                ORDER BY created_ts DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return list(cur.fetchall())
 
     def get_export(self, export_id: int):
         with self._lock:

@@ -31,10 +31,15 @@ class WhisperCppBackend(ASRBackend):
     def _resolve_binary(self) -> Optional[str]:
         if self.binary_path and os.path.exists(self.binary_path):
             return self.binary_path
+        search_dirs = [
+            os.path.join(".", "bin", "whisper.cpp"),
+            os.path.join(".", "bin", "whisper.cpp", "build", "bin"),
+        ]
         for candidate in ["whisper-cli", "main", "whisper.cpp"]:
-            path = os.path.join(".", "bin", "whisper.cpp", candidate)
-            if os.path.exists(path):
-                return path
+            for directory in search_dirs:
+                path = os.path.join(directory, candidate)
+                if os.path.exists(path):
+                    return path
         return None
 
     def _transcribe_with_python(self, wav_path: str) -> Optional[str]:

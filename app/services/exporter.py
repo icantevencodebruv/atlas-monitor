@@ -22,6 +22,13 @@ def format_dialogue(rows):
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def _parse_with_tz(value: str, tz: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(tz))
+    return dt.astimezone(ZoneInfo("UTC"))
+
+
 def compute_range(range_label: str, now: datetime, session_row, start: str = None, end: str = None, tz: str = "UTC"):
     if range_label == "30m":
         return now - timedelta(minutes=30), now
@@ -40,7 +47,7 @@ def compute_range(range_label: str, now: datetime, session_row, start: str = Non
     if range_label == "custom":
         if not start or not end:
             return now, now
-        return datetime.fromisoformat(start), datetime.fromisoformat(end)
+        return _parse_with_tz(start, tz), _parse_with_tz(end, tz)
     return now, now
 
 

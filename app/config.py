@@ -23,6 +23,7 @@ class AudioConfig(BaseModel):
     channels: int = 1
     segment_seconds: int = 30
     device_hostapi_preference: dict = Field(default_factory=dict)
+    input_device_name: Optional[str] = None
 
 
 class WorkHoursConfig(BaseModel):
@@ -73,6 +74,7 @@ class DiarizationConfig(BaseModel):
     min_margin: float = 0.05
     require_both_enrolled: bool = True
     enrollment_min_snr_db: float = 12.0
+    reference_locked: bool = False
 
 
 class RetryConfig(BaseModel):
@@ -104,3 +106,9 @@ def load_config(path: str) -> Config:
     cfg = Config.model_validate(data)
     cfg.app.host = "127.0.0.1"
     return cfg
+
+
+def save_config(path: str, cfg: Config) -> None:
+    data = cfg.model_dump()
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)

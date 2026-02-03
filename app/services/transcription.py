@@ -1,9 +1,10 @@
 import logging
 import os
+import re
 import threading
 from datetime import datetime, timedelta
 from queue import Queue, Empty
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 
@@ -13,6 +14,33 @@ from app.services.diarization import SpeakerIdentifier, compute_embedding
 from app.services.vad import vad_split
 
 logger = logging.getLogger(__name__)
+
+
+NON_SPEECH_PATTERNS = [
+    r"^\\s*\\[.*\\]\\s*$",
+    r"^\\s*\\(.*\\)\\s*$",
+    r"^\\s*\\*.*\\*\\s*$",
+    r"\\b(blank audio|music|musik|musique|typing|keyboard|clacking|scissors|cough)\\b",
+]
+
+
+def _letter_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    letters = sum(1 for ch in text if ch.isalpha())
+    return letters / max(len(text), 1)
+
+
+def is_non_speech(text: str) -> bool:
+    if not text:
+        return True
+    t = text.strip().lower()
+    for pattern in NON_SPEECH_PATTERNS:
+        if re.search(pattern, t):
+            return True
+    if _letter_ratio(t) < 0.2:
+        return True
+    return False
 
 
 class TranscriptionWorker:
@@ -72,6 +100,7 @@ class TranscriptionWorker:
         )
 
         fragments: List[dict] = []
+        had_text = False
         for seg in segments:
             start = int(seg.start_sec * sample_rate)
             end = int(seg.end_sec * sample_rate)
@@ -79,7 +108,7 @@ class TranscriptionWorker:
             if chunk.size == 0:
                 continue
             emb = compute_embedding(chunk, sample_rate)
-            speaker = self._select_speaker(emb)
+            speaker, low_confidence = self._select_speaker(emb)
 
             chunk_path = file_path + f".{start}_{end}.wav"
             write_wav_int16(chunk_path, chunk, sample_rate)
@@ -92,6 +121,9 @@ class TranscriptionWorker:
                     pass
             if not text:
                 continue
+            had_text = True
+            if is_non_speech(text):
+                continue
             frag_start = datetime.fromisoformat(segment["start_ts"]) + timedelta(seconds=seg.start_sec)
             frag_end = datetime.fromisoformat(segment["start_ts"]) + timedelta(seconds=seg.end_sec)
             fragments.append(
@@ -100,6 +132,7 @@ class TranscriptionWorker:
                     "end_ts": frag_end.isoformat(),
                     "speaker": speaker,
                     "text": text.strip(),
+                    "low_confidence": low_confidence,
                 }
             )
 
@@ -109,28 +142,35 @@ class TranscriptionWorker:
             os.remove(file_path)
             return
 
-        if segments:
+        if segments and not had_text:
             self._db.update_segment_status(segment_id, "failed", "no transcription output")
+            return
+        if segments and had_text:
+            self._db.update_segment_status(segment_id, "done")
+            os.remove(file_path)
             return
 
         self._db.update_segment_status(segment_id, "done")
         os.remove(file_path)
 
-    def _select_speaker(self, embedding: np.ndarray) -> str:
+    def _select_speaker(self, embedding: np.ndarray) -> Tuple[str, bool]:
         lock_mode = getattr(self._state, "speaker_lock", "auto")
         if lock_mode == "hugo":
-            return "Hugo"
+            return "Hugo", False
         if lock_mode == "leon":
-            return "Leon"
+            return "Leon", False
         if self._config.diarization.require_both_enrolled:
             if not (self._diarizer.has_embedding("Hugo") and self._diarizer.has_embedding("Leon")):
-                return "Unknown"
+                return "Unknown", True
         best_speaker, best_score, second_score = self._diarizer.best_match(embedding)
         if not best_speaker:
-            return "Unknown"
+            return "Unknown", True
         margin = second_score - best_score
         if best_score > self._config.diarization.max_distance:
-            return "Unknown"
+            return "Unknown", True
         if margin < self._config.diarization.min_margin:
-            return "Unknown"
-        return best_speaker
+            return "Unknown", True
+        soft_max = self._config.diarization.max_distance * 0.85
+        soft_margin = self._config.diarization.min_margin * 1.5
+        low_confidence = best_score > soft_max or margin < soft_margin
+        return best_speaker, low_confidence

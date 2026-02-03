@@ -1,42 +1,52 @@
 app:
-  host: "127.0.0.1"
+  host: 127.0.0.1
   port: 7070
   open_browser: true
 storage:
-  db_path: "./data/app.db"
-  audio_dir: "./data/audio"
-  exports_dir: "./data/exports"
-  logs_dir: "./data/logs"
+  db_path: ./data/app.db
+  audio_dir: ./data/audio
+  exports_dir: ./data/exports
+  logs_dir: ./data/logs
 audio:
   sample_rate: 16000
   channels: 1
   segment_seconds: 30
   device_hostapi_preference:
-    windows: "WASAPI"
-    macos: "Core Audio"
+    windows: WASAPI
+    macos: Core Audio
+  input_device_name: Elgato Wave:3
 work_hours:
-  timezone: "Europe/Berlin"
+  timezone: Europe/Berlin
   enabled: true
-  work_days: [MON, TUE, WED, THU, FRI]
-  work_start: "09:00"
-  work_end: "18:00"
+  work_days:
+  - MON
+  - TUE
+  - WED
+  - THU
+  - FRI
+  work_start: 09:00
+  work_end: '18:00'
 asr:
-  backend: "whisper_cpp" # auto|windows_nemo_parakeet_cuda|mac_parakeet_mlx|whisper_cpp
-  required_languages: ["de", "en"]
+  backend: whisper_cpp
+  required_languages:
+  - de
+  - en
   windows_nemo_parakeet_cuda:
-    model_name: "" # set to a local .nemo path or model name
-    languages: ["en"]
+    model_name: ''
+    languages:
+    - en
   mac_parakeet_mlx:
-    model_id: "mlx-community/parakeet-tdt-0.6b-v3"
-    hf_cache_dir: "./models/parakeet_mlx"
-    hf_cache_dir_parent: "./models"
+    model_id: mlx-community/parakeet-tdt-0.6b-v3
+    hf_cache_dir: ./models/parakeet_mlx
+    hf_cache_dir_parent: ./models
     hf_offline: false
-    languages: ["en", "de"]
+    languages:
+    - en
+    - de
   whisper_cpp:
-    model_path: "./models/ggml-small.bin"
-    language: "auto"
-    binary_path: "/opt/homebrew/bin/whisper-cli" # optional path to whisper.cpp CLI binary
-    model_url: "" # optional URL override for offline bundling
+    model_path: ./models/ggml-small.bin
+    language: auto
+    binary_path: /opt/homebrew/bin/whisper-cli
 transcription:
   vad_aggressiveness: 2
   min_utterance_sec: 0.6
@@ -48,6 +58,7 @@ diarization:
   min_margin: 0.05
   require_both_enrolled: true
   enrollment_min_snr_db: 12.0
+  reference_locked: false
 retry:
   enabled: true
   max_attempts: 5

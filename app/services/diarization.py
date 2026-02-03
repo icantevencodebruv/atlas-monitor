@@ -30,6 +30,10 @@ class SpeakerIdentifier:
     def set_embedding(self, speaker: str, vector: np.ndarray) -> None:
         self._embeddings[speaker] = vector.astype(np.float32)
 
+    def remove_embedding(self, speaker: str) -> None:
+        if speaker in self._embeddings:
+            del self._embeddings[speaker]
+
     def has_embedding(self, speaker: str) -> bool:
         emb = self._embeddings.get(speaker)
         return emb is not None and emb.size > 0
