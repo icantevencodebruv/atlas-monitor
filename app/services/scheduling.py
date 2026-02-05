@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 from datetime import datetime, time as dtime, timezone
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from app.state import AppState
@@ -10,11 +11,22 @@ logger = logging.getLogger(__name__)
 
 
 class WorkHoursScheduler:
-    def __init__(self, config, state: AppState, recorder, db):
+    def __init__(
+        self,
+        config,
+        state: AppState,
+        recorder,
+        db,
+        on_workday_end: Optional[Callable[[datetime], None]] = None,
+        now_provider: Optional[Callable[[ZoneInfo], datetime]] = None,
+    ):
         self._config = config
         self._state = state
         self._recorder = recorder
         self._db = db
+        self._on_workday_end = on_workday_end
+        self._last_in_hours: Optional[bool] = None
+        self._now_provider = now_provider or (lambda tz: datetime.now(tz))
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -38,8 +50,16 @@ class WorkHoursScheduler:
         cfg = self._config.work_hours
         if not cfg.enabled:
             return
-        now = datetime.now(ZoneInfo(cfg.timezone))
+        tz = ZoneInfo(cfg.timezone)
+        now = self._now_provider(tz)
         in_hours = is_within_work_hours(cfg, now)
+
+        if self._last_in_hours is True and not in_hours and self._on_workday_end:
+            try:
+                self._on_workday_end(now)
+            except Exception as exc:
+                logger.exception("Workday-end hook failed: %s", exc)
+        self._last_in_hours = in_hours
 
         with self._state.lock:
             if self._state.manual_override is None:

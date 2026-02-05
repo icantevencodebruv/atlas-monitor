@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
 from app.db.database import Database
@@ -49,6 +49,22 @@ def compute_range(range_label: str, now: datetime, session_row, start: str = Non
             return now, now
         return _parse_with_tz(start, tz), _parse_with_tz(end, tz)
     return now, now
+
+
+def compute_workday_range(now: datetime, tz: str, work_start: str, work_end: str) -> tuple[datetime, datetime]:
+    local_tz = ZoneInfo(tz)
+    if now.tzinfo is None:
+        local_now = now.replace(tzinfo=local_tz)
+    else:
+        local_now = now.astimezone(local_tz)
+    date = local_now.date()
+    start_t = dtime.fromisoformat(work_start)
+    end_t = dtime.fromisoformat(work_end)
+    start_local = datetime.combine(date, start_t, tzinfo=local_tz)
+    end_local = datetime.combine(date, end_t, tzinfo=local_tz)
+    if end_local <= start_local:
+        end_local = end_local + timedelta(days=1)
+    return start_local.astimezone(ZoneInfo("UTC")), end_local.astimezone(ZoneInfo("UTC"))
 
 
 def build_export(db: Database, range_label: str, start_ts: datetime, end_ts: datetime, exports_dir: str) -> int:

@@ -27,9 +27,24 @@
                               /__________\
 </pre>
 
-**Last update:** 27.01.2026
+![Project Screenshot](./assets/images/atlas-monitor-github.svg)
+
+**Last update:** 05.02.2026
 
 Offline-only recorder with incremental transcription + diarization, built for two fixed speakers (Hugo, Leon) and a minimal local UI. No telemetry, no network calls at runtime.
+
+---
+
+## About
+
+**Atlas Monitor** is a localhost-only “control center” for:
+- segmented microphone recording
+- incremental transcription
+- two-speaker diarization (Hugo / Leon) with a confidence gate to **Unknown**
+- work-hours scheduling + manual override
+- exports (session, today, custom ranges) and end-of-workday **workday** auto export
+
+No accounts. No cloud. No telemetry.
 
 ---
 
@@ -37,12 +52,13 @@ Offline-only recorder with incremental transcription + diarization, built for tw
 
 - Offline only at runtime (no network calls, no telemetry).
 - Localhost only (`127.0.0.1`).
-- Minimal UI with status + Start/Stop.
+- Minimal UI with status + Start/Stop + scheduler controls.
 - Mixed language transcription (German + English).
 - Diarization labels **Hugo** or **Leon**; Auto mode can emit **Unknown** when below confidence.
 - Work-hours scheduling with manual override.
 - Raw audio deleted after successful transcription.
 - Range exports: last 30m, last 60m, today (Europe/Berlin), session, custom.
+- End-of-workday **workday** auto export (deduped).
 - Output format: classic dialogue lines.
 
 ---
@@ -51,11 +67,19 @@ Offline-only recorder with incremental transcription + diarization, built for tw
 
 ```bash
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python run.py
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python run.py
 ```
 
 Open: `http://127.0.0.1:7070`
+
+### Windows Quick Start (Dev)
+
+```bat
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python run.py
+```
 
 ---
 
@@ -85,6 +109,11 @@ Key sections:
 Go to `http://127.0.0.1:7070/setup` and enroll Hugo + Leon (20–40 seconds each).
 
 Embeddings are stored in SQLite and used for diarization.
+
+### Enrollment UX Notes
+
+- While enrolling, Setup shows a clear **STOP RECORDING** button plus an enrollment timer + countdown.
+- References can be locked only after both speakers are enrolled (prevents accidental swaps).
 
 ### Speaker Lock + Confidence Gate (New)
 
@@ -180,6 +209,15 @@ Keep the app inside the project folder so it can find `run.py`.
 ## Admin (Failed Segments)
 
 Open `http://127.0.0.1:7070/admin` to review failed segments, retry, export raw audio ZIPs, or delete.
+
+---
+
+## UI Pages
+
+- `/` Overview: recorder controls, scheduler state, transcript preview, exports.
+- `/setup` Setup: enrollment + reference lock.
+- `/mic` Mic: input device chooser, optional live meter, short test recording.
+- `/admin` Admin: failed segment triage + exports.
 
 ---
 

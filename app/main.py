@@ -16,7 +16,7 @@ from app.db.database import Database
 from app.logging_setup import setup_logging
 from app.services.diarization import SpeakerIdentifier
 from app.services.enrollment import EnrollmentService
-from app.services.exporter import build_export, compute_range
+from app.services.exporter import build_export, compute_range, compute_workday_range
 from app.services.audio_probe import measure_level, test_recording
 from app.services.recorder import SegmentRecorder, list_input_devices, set_input_device, select_input_device
 from app.services.retry_worker import RetryWorker
@@ -70,7 +70,31 @@ recorder = SegmentRecorder(
     on_segment_start=_mark_segment_start,
 )
 worker = TranscriptionWorker(db, segment_queue, backend, diarizer, config, state)
-scheduler = WorkHoursScheduler(config, state, recorder, db)
+
+
+def _auto_export_workday(now_local: datetime) -> None:
+    cfg = config.work_hours
+    if not cfg.enabled:
+        return
+    try:
+        start_ts, end_ts = compute_workday_range(now_local, cfg.timezone, cfg.work_start, cfg.work_end)
+    except Exception as exc:
+        logger.warning("Auto export skipped (invalid workday range): %s", exc)
+        return
+    start_iso = start_ts.isoformat()
+    end_iso = end_ts.isoformat()
+    if start_ts >= end_ts:
+        logger.warning("Auto export skipped (start >= end): %s .. %s", start_iso, end_iso)
+        return
+    existing = db.find_export("workday", start_iso, end_iso)
+    if existing:
+        logger.info("Auto export skipped (already exists): workday %s .. %s", start_iso, end_iso)
+        return
+    export_id = build_export(db, "workday", start_ts, end_ts, config.storage.exports_dir)
+    logger.info("Auto export created: id=%s workday %s .. %s", export_id, start_iso, end_iso)
+
+
+scheduler = WorkHoursScheduler(config, state, recorder, db, on_workday_end=_auto_export_workday)
 retry_worker = RetryWorker(db, segment_queue, config)
 enroller = EnrollmentService(
     db,
@@ -141,6 +165,11 @@ def setup_page():
     return HTMLResponse(_SETUP_HTML)
 
 
+@app.get("/mic", response_class=HTMLResponse)
+def mic_page():
+    return HTMLResponse(_MIC_HTML)
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page():
     return HTMLResponse(_ADMIN_HTML)
@@ -165,6 +194,7 @@ def status():
         "recording_since": state.recording_since,
         "last_segment_start": state.last_segment_start,
         "segment_seconds": config.audio.segment_seconds,
+        "enrollment_seconds": config.transcription.enrollment_seconds,
         "work_hours_enabled": config.work_hours.enabled,
         "in_work_hours": in_hours,
         "timezone": config.work_hours.timezone,
@@ -411,7 +441,24 @@ def enroll_hugo():
         raise HTTPException(status_code=400, detail="Reference locked. Click Reroll to update.")
     if state.recording:
         raise HTTPException(status_code=400, detail="Stop recording before enrollment.")
-    result = enroller.enroll("Hugo", config.transcription.enrollment_seconds)
+    try:
+        result = enroller.enroll("Hugo", config.transcription.enrollment_seconds)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "enrollment_in_progress" in msg:
+            raise HTTPException(status_code=409, detail="Another enrollment is in progress.") from exc
+        if "no_audio_captured" in msg:
+            raise HTTPException(status_code=400, detail="No audio captured. Check Mic settings and retry.") from exc
+        if "portaudio" in msg or "inputstream" in msg:
+            logger.warning("Enrollment failed for Hugo: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Microphone is unavailable. Check Mic settings and close other apps using the mic, then retry.",
+            ) from exc
+        logger.exception("Unexpected enrollment failure for Hugo.")
+        raise
+    if result.get("cancelled"):
+        return JSONResponse({"status": "cancelled", **result})
     return JSONResponse({"status": "ok", **result})
 
 
@@ -421,8 +468,33 @@ def enroll_leon():
         raise HTTPException(status_code=400, detail="Reference locked. Click Reroll to update.")
     if state.recording:
         raise HTTPException(status_code=400, detail="Stop recording before enrollment.")
-    result = enroller.enroll("Leon", config.transcription.enrollment_seconds)
+    try:
+        result = enroller.enroll("Leon", config.transcription.enrollment_seconds)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "enrollment_in_progress" in msg:
+            raise HTTPException(status_code=409, detail="Another enrollment is in progress.") from exc
+        if "no_audio_captured" in msg:
+            raise HTTPException(status_code=400, detail="No audio captured. Check Mic settings and retry.") from exc
+        if "portaudio" in msg or "inputstream" in msg:
+            logger.warning("Enrollment failed for Leon: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Microphone is unavailable. Check Mic settings and close other apps using the mic, then retry.",
+            ) from exc
+        logger.exception("Unexpected enrollment failure for Leon.")
+        raise
+    if result.get("cancelled"):
+        return JSONResponse({"status": "cancelled", **result})
     return JSONResponse({"status": "ok", **result})
+
+
+@app.post("/setup/enroll/stop")
+def stop_enrollment():
+    stop = enroller.stop_active()
+    if stop["stopping"]:
+        return {"status": "stopping", "speaker": stop["speaker"]}
+    return {"status": "idle", "speaker": None}
 
 
 @app.post("/setup/clear/hugo")
@@ -467,10 +539,7 @@ _HOME_HTML = """
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Atlas Monitor</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com"/>
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+    <title>Overview • Atlas Monitor</title>
     <style>
       :root {
         --bg-primary: radial-gradient(circle at 20% 20%, #0f172a, #030712);
@@ -501,9 +570,10 @@ _HOME_HTML = """
         font-family: "Inter", "Segoe UI", sans-serif;
         color: var(--text-primary);
         background: var(--bg-primary);
+        overflow-x: hidden;
       }
       a { color: inherit; text-decoration: none; }
-      .page { max-width: 1280px; margin: 0 auto; padding: 28px 24px 56px; }
+      .page { max-width: 1520px; margin: 0 auto; padding: 28px 24px 56px; }
       .top-nav {
         display: grid;
         grid-template-columns: 1fr auto auto;
@@ -568,11 +638,12 @@ _HOME_HTML = """
       }
       .main-grid {
         display: grid;
-        grid-template-columns: 320px 1fr;
+        grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
         gap: 20px;
+        align-items: start;
       }
       .sidebar { display: flex; flex-direction: column; gap: 18px; }
-      .content { display: flex; flex-direction: column; gap: 18px; }
+      .content { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
       .panel {
         position: relative;
         padding: 22px;
@@ -581,6 +652,7 @@ _HOME_HTML = """
         border: 1px solid var(--border-glass);
         box-shadow: var(--shadow-glass);
         backdrop-filter: blur(18px);
+        overflow: hidden;
       }
       .panel::after {
         content: "";
@@ -719,11 +791,16 @@ _HOME_HTML = """
       .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--text-secondary); }
       .transcript-list {
         margin-top: 12px;
-        max-height: 420px;
+        max-height: min(560px, calc(100vh - 360px));
         overflow: auto;
         display: grid;
         gap: 10px;
+        scrollbar-gutter: stable;
+        overscroll-behavior: contain;
       }
+      .jump-latest { display: none; }
+      .jump-latest.show { display: inline-flex; }
+      .chip.inline { display: inline-flex; align-items: center; gap: 8px; }
       .transcript-item {
         padding: 10px 12px;
         border-radius: var(--radius-sm);
@@ -739,6 +816,7 @@ _HOME_HTML = """
         color: var(--text-secondary);
       }
       .transcript-text { margin-top: 6px; font-size: 0.92rem; line-height: 1.4; }
+      .transcript-text { word-break: break-word; }
       .transcript-item.low { border-color: rgba(255, 185, 77, 0.45); }
       .export-grid {
         display: grid;
@@ -783,11 +861,12 @@ _HOME_HTML = """
       <header class="top-nav">
         <div>
           <div class="brand-title">Atlas Monitor</div>
-          <div class="brand-subtitle">Offline recorder • diarized transcription • localhost only</div>
+          <div class="brand-subtitle">Overview • Offline recorder • diarized transcription • localhost only</div>
         </div>
         <nav class="nav-links">
-          <a class="nav-link active" href="/">Recorder</a>
+          <a class="nav-link active" href="/">Overview</a>
           <a class="nav-link" href="/setup">Setup</a>
+          <a class="nav-link" href="/mic">Mic</a>
           <a class="nav-link" href="/admin">Admin</a>
         </nav>
         <div class="status-pill idle" id="statusPill">Idle</div>
@@ -828,38 +907,10 @@ _HOME_HTML = """
             <div class="badge-row">
               <div class="badge" id="badgeHugo">Hugo: --</div>
               <div class="badge" id="badgeLeon">Leon: --</div>
-              <div class="badge" id="refState">Reference: --</div>
             </div>
-            <div class="button-row">
-              <button class="btn" onclick="rerollReferences()">Reroll references</button>
-              <button class="btn ghost" onclick="lockReferences()">Lock reference</button>
-            </div>
+            <p class="muted" style="margin-top: 12px;">Manage enrollment references in <a class="link" href="/setup">Setup</a>.</p>
             <div class="notice" id="enrollHint" style="display:none;"></div>
             <div class="alert" id="error"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>Microphone</h2>
-              <div class="chip" id="deviceStatus">--</div>
-            </div>
-            <label class="label">Input device</label>
-            <div class="input-row">
-              <select id="deviceSelect"></select>
-              <button class="btn" onclick="saveDevice()">Save</button>
-            </div>
-            <div class="meter">
-              <div class="meter-bar" id="levelBar"></div>
-            </div>
-            <div class="meter-meta">
-              <div class="label">Live level</div>
-              <div class="value" id="levelText">--</div>
-            </div>
-            <div class="button-row">
-              <button class="btn ghost" id="toggleMeter" onclick="toggleMeter()">Enable live meter</button>
-              <button class="btn secondary" onclick="testMic()">Test 3s</button>
-              <div class="inline" id="testResult"></div>
-            </div>
           </section>
 
           <section class="panel">
@@ -895,6 +946,8 @@ _HOME_HTML = """
                   <input type="checkbox" id="hideLow"/>
                   <span>Hide low confidence</span>
                 </label>
+                <button class="btn ghost jump-latest" id="jumpLatest" onclick="jumpToLatest()">Jump to latest</button>
+                <div class="chip inline" id="transcriptStatus" title="Live transcript refresh">Live</div>
               </div>
             </div>
             <div class="transcript-list" id="transcriptList"></div>
@@ -933,8 +986,33 @@ _HOME_HTML = """
       </div>
     </div>
     <script>
-      const escapeHtml = (value) => value.replace(/[&<>\"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+      const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
       const resumeBtn = document.getElementById('resumeScheduleBtn');
+      const errorEl = document.getElementById('error');
+
+      function showPageError(msg) {
+        if (!msg) {
+          errorEl.textContent = "";
+          errorEl.classList.remove("show");
+          return;
+        }
+        errorEl.textContent = msg;
+        errorEl.classList.add("show");
+      }
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!response.ok) {
+          throw new Error(data.detail || `Request failed (${response.status})`);
+        }
+        return data;
+      }
 
       function selectedLock() {
         const selected = document.querySelector('input[name="speakerLock"]:checked');
@@ -968,54 +1046,52 @@ _HOME_HTML = """
       }
 
       async function refresh() {
-        const res = await fetch('/status');
-        const data = await res.json();
-        const pill = document.getElementById('statusPill');
-        pill.textContent = data.status === 'recording' ? 'Recording' : 'Idle';
-        pill.className = 'status-pill ' + (data.status === 'recording' ? 'recording' : 'idle');
-        const errorEl = document.getElementById('error');
-        if (data.backend_error) {
-          errorEl.textContent = 'ASR error: ' + data.backend_error;
-          errorEl.classList.add('show');
-        } else {
-          errorEl.textContent = '';
-          errorEl.classList.remove('show');
+        try {
+          const data = await fetchJson('/status');
+          const pill = document.getElementById('statusPill');
+          pill.textContent = data.status === 'recording' ? 'Recording' : 'Idle';
+          pill.className = 'status-pill ' + (data.status === 'recording' ? 'recording' : 'idle');
+          if (data.backend_error) {
+            showPageError('ASR error: ' + data.backend_error);
+          } else {
+            showPageError('');
+          }
+          const hugoOk = data.enrolled && data.enrolled.Hugo;
+          const leonOk = data.enrolled && data.enrolled.Leon;
+          updateBadge('badgeHugo', 'Hugo', hugoOk);
+          updateBadge('badgeLeon', 'Leon', leonOk);
+          const hint = document.getElementById('enrollHint');
+          if (data.speaker_lock === 'auto' && !data.auto_ready) {
+            hint.style.display = 'block';
+            hint.textContent = 'Enroll required for Auto mode. Please enroll both speakers.';
+          } else {
+            hint.style.display = 'none';
+            hint.textContent = '';
+          }
+          if (data.speaker_lock) {
+            const target = document.querySelector(`input[name="speakerLock"][value="${data.speaker_lock}"]`);
+            if (target) {
+              target.checked = true;
+            }
+          }
+          document.getElementById('recordingSince').textContent = formatSince(data.recording_since);
+          document.getElementById('segmentCountdown').textContent = formatCountdown(data.last_segment_start, data.segment_seconds);
+          const scheduleState = document.getElementById('scheduleState');
+          if (!data.work_hours_enabled) {
+            scheduleState.textContent = 'Schedule off';
+          } else if (data.manual_override === null) {
+            scheduleState.textContent = data.in_work_hours ? 'Scheduled: On' : 'Scheduled: Off';
+          } else {
+            scheduleState.textContent = 'Manual override';
+          }
+          resumeBtn.style.display = data.manual_override === null ? 'none' : 'inline-flex';
+          document.getElementById('timezoneBadge').textContent = `TZ: ${data.timezone}`;
+          document.getElementById('tzLabel').textContent = data.timezone;
+          document.getElementById('workHoursBadge').textContent = data.in_work_hours ? 'In hours' : 'Out of hours';
+          document.getElementById('manualBadge').textContent = data.manual_override === null ? 'Manual: Auto' : 'Manual: Override';
+        } catch (err) {
+          showPageError(err.message || 'Failed to load status.');
         }
-        const hugoOk = data.enrolled && data.enrolled.Hugo;
-        const leonOk = data.enrolled && data.enrolled.Leon;
-        updateBadge('badgeHugo', 'Hugo', hugoOk);
-        updateBadge('badgeLeon', 'Leon', leonOk);
-        const hint = document.getElementById('enrollHint');
-        if (data.speaker_lock === 'auto' && !data.auto_ready) {
-          hint.style.display = 'block';
-          hint.textContent = 'Enroll required for Auto mode. Please enroll both speakers.';
-        } else {
-          hint.style.display = 'none';
-          hint.textContent = '';
-        }
-        if (data.speaker_lock) {
-          const target = document.querySelector(`input[name="speakerLock"][value="${data.speaker_lock}"]`);
-          if (target) { target.checked = true; }
-        }
-        document.getElementById('recordingSince').textContent = formatSince(data.recording_since);
-        document.getElementById('segmentCountdown').textContent = formatCountdown(data.last_segment_start, data.segment_seconds);
-        const scheduleState = document.getElementById('scheduleState');
-        if (!data.work_hours_enabled) {
-          scheduleState.textContent = 'Schedule off';
-        } else if (data.manual_override === null) {
-          scheduleState.textContent = data.in_work_hours ? 'Scheduled: On' : 'Scheduled: Off';
-        } else {
-          scheduleState.textContent = 'Manual override';
-        }
-        resumeBtn.style.display = data.manual_override === null ? 'none' : 'inline-flex';
-        const refState = document.getElementById('refState');
-        refState.textContent = data.reference_locked ? 'Reference: Locked' : 'Reference: Unlocked';
-        refState.className = 'badge ' + (data.reference_locked ? 'good' : 'warn');
-        document.getElementById('timezoneBadge').textContent = `TZ: ${data.timezone}`;
-        document.getElementById('tzLabel').textContent = data.timezone;
-        document.getElementById('workHoursBadge').textContent = data.in_work_hours ? 'In hours' : 'Out of hours';
-        document.getElementById('manualBadge').textContent = data.manual_override === null ? 'Manual: Auto' : 'Manual: Override';
-        document.getElementById('deviceStatus').textContent = data.input_device_name ? data.input_device_name : 'Auto';
       }
 
       function updateBadge(id, name, ok) {
@@ -1026,32 +1102,28 @@ _HOME_HTML = """
       }
 
       async function post(url, body) {
-        await fetch(url, {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
-        refresh();
+        await fetchJson(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body || {}),
+        });
+        await refresh();
       }
 
       async function startRecording() {
-        await post('/record/start', {lock_mode: selectedLock()});
+        try {
+          await post('/record/start', {lock_mode: selectedLock()});
+        } catch (err) {
+          showPageError(err.message || 'Failed to start recording.');
+        }
       }
 
       async function setLockMode(mode) {
-        await post('/record/start', {lock_mode: mode, set_only: true});
-      }
-
-      async function rerollReferences() {
-        const res = await fetch('/setup/reroll', {method:'POST'});
-        if (!res.ok) {
-          alert('Failed to reroll references.');
+        try {
+          await post('/record/start', {lock_mode: mode, set_only: true});
+        } catch (err) {
+          showPageError(err.message || 'Failed to set speaker mode.');
         }
-        refresh();
-      }
-
-      async function lockReferences() {
-        const res = await fetch('/setup/lock_reference', {method:'POST'});
-        if (!res.ok) {
-          alert('Failed to lock references.');
-        }
-        refresh();
       }
 
       function showProgress(show) {
@@ -1060,139 +1132,102 @@ _HOME_HTML = """
       }
 
       async function exportRange(range) {
-        document.getElementById('exportError').textContent = '';
+        const exportError = document.getElementById('exportError');
+        exportError.textContent = '';
         showProgress(true);
-        const res = await fetch('/export', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({range})});
-        if (!res.ok) {
-          const err = await res.json();
-          document.getElementById('exportError').textContent = err.detail || 'Export failed.';
+        try {
+          const data = await fetchJson('/export', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({range}),
+          });
+          document.getElementById('downloadLink').href = '/download/' + data.id;
+          await loadRecentExports();
+        } catch (err) {
+          exportError.textContent = err.message || 'Export failed.';
+        } finally {
           showProgress(false);
-          return;
         }
-        const data = await res.json();
-        document.getElementById('downloadLink').href = '/download/' + data.id;
-        showProgress(false);
-        loadRecentExports();
       }
 
       async function exportCustom() {
-        document.getElementById('exportError').textContent = '';
+        const exportError = document.getElementById('exportError');
+        exportError.textContent = '';
         const start = document.getElementById('customStart').value;
         const end = document.getElementById('customEnd').value;
         showProgress(true);
-        const res = await fetch('/export', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({range: 'custom', start, end})});
-        if (!res.ok) {
-          const err = await res.json();
-          document.getElementById('exportError').textContent = err.detail || 'Export failed.';
+        try {
+          const data = await fetchJson('/export', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({range: 'custom', start, end}),
+          });
+          document.getElementById('downloadLink').href = '/download/' + data.id;
+          await loadRecentExports();
+        } catch (err) {
+          exportError.textContent = err.message || 'Export failed.';
+        } finally {
           showProgress(false);
-          return;
-        }
-        const data = await res.json();
-        document.getElementById('downloadLink').href = '/download/' + data.id;
-        showProgress(false);
-        loadRecentExports();
-      }
-
-      async function loadRecentExports() {
-        const res = await fetch('/exports/recent');
-        const data = await res.json();
-        const list = document.getElementById('exportList');
-        list.innerHTML = '';
-        for (const row of data.rows) {
-          const time = new Date(row.created_ts).toLocaleString();
-          const size = formatBytes(row.size_bytes || 0);
-          const div = document.createElement('div');
-          div.className = 'export-row';
-          div.innerHTML = `<span>${time} • ${row.range_label}</span><span>${size}</span>`;
-          list.appendChild(div);
-        }
-        if (!data.rows.length) {
-          list.innerHTML = '<div class="inline">No exports yet.</div>';
         }
       }
 
       function formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
         const k = 1024;
         const sizes = ['B', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
       }
 
-      async function loadDevices() {
-        const res = await fetch('/audio/devices');
-        const data = await res.json();
-        const select = document.getElementById('deviceSelect');
-        select.innerHTML = '';
-        const autoOption = document.createElement('option');
-        autoOption.value = 'auto';
-        autoOption.textContent = 'Auto (first available)';
-        select.appendChild(autoOption);
-        data.devices.forEach((dev) => {
-          const option = document.createElement('option');
-          option.value = dev.name;
-          option.textContent = `${dev.name} • ${dev.hostapi}`;
-          select.appendChild(option);
-        });
-        select.value = data.selected || 'auto';
-        document.getElementById('deviceStatus').textContent = data.selected ? data.selected : 'Auto';
-      }
-
-      async function saveDevice() {
-        const value = document.getElementById('deviceSelect').value;
-        const res = await fetch('/audio/device', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: value})});
-        const chip = document.getElementById('deviceStatus');
-        if (res.ok) {
-          chip.textContent = value === 'auto' ? 'Auto selected' : 'Saved';
-        } else {
-          chip.textContent = 'Error';
-        }
-      }
-
-      let meterTimer = null;
-
-      function toggleMeter() {
-        const btn = document.getElementById('toggleMeter');
-        if (meterTimer) {
-          clearInterval(meterTimer);
-          meterTimer = null;
-          btn.textContent = 'Enable live meter';
-          document.getElementById('levelText').textContent = '--';
-          document.getElementById('levelBar').style.width = '5%';
-          return;
-        }
-        pollLevel();
-        meterTimer = setInterval(pollLevel, 1400);
-        btn.textContent = 'Stop meter';
-      }
-
-      async function pollLevel() {
-        const res = await fetch('/audio/level');
-        const data = await res.json();
-        const bar = document.getElementById('levelBar');
-        const text = document.getElementById('levelText');
-        if (data.busy) {
-          bar.style.width = '5%';
-          text.textContent = 'Paused while recording';
-          return;
-        }
-        const rms = Math.min(1, data.rms || 0);
-        bar.style.width = Math.min(100, Math.round(rms * 140)) + '%';
-        text.textContent = `RMS ${(rms * 100).toFixed(1)}% • SNR ${data.snr_db} dB • Noise ${data.noise_floor} dBFS`;
-      }
-
-      async function testMic() {
-        const res = await fetch('/audio/test', {method:'POST'});
-        const data = await res.json();
-        const el = document.getElementById('testResult');
-        if (data.ok) {
-          el.textContent = `SNR ${data.snr_db} dB`;
-        } else {
-          el.textContent = 'Test failed (device busy)';
+      async function loadRecentExports() {
+        const list = document.getElementById('exportList');
+        list.innerHTML = '<div class="inline">Loading exports...</div>';
+        try {
+          const data = await fetchJson('/exports/recent');
+          list.innerHTML = '';
+          for (const row of data.rows || []) {
+            const time = new Date(row.created_ts).toLocaleString();
+            const size = formatBytes(row.size_bytes || 0);
+            const div = document.createElement('div');
+            div.className = 'export-row';
+            div.innerHTML = `<span>${time} • ${row.range_label}</span><span>${size}</span>`;
+            list.appendChild(div);
+          }
+          if (!(data.rows || []).length) {
+            list.innerHTML = '<div class="inline">No exports yet.</div>';
+          }
+        } catch (err) {
+          list.innerHTML = `<div class="inline">Failed to load exports: ${escapeHtml(err.message || 'Unknown error')}</div>`;
         }
       }
 
       async function loadTranscripts() {
+        const list = document.getElementById('transcriptList');
+        const jumpBtn = document.getElementById('jumpLatest');
+        const statusChip = document.getElementById('transcriptStatus');
+        if (!window.__atlasTranscript) {
+          window.__atlasTranscript = {
+            inFlight: false,
+            lastQueryKey: '',
+            lastSig: '',
+            hasNewWhileAway: false,
+            lastOkAt: 0,
+          };
+          // Clear "new updates" indicator when user returns to the bottom.
+          list.addEventListener('scroll', () => {
+            const nearBottom = (list.scrollTop + list.clientHeight) >= (list.scrollHeight - 24);
+            if (nearBottom && window.__atlasTranscript.hasNewWhileAway) {
+              window.__atlasTranscript.hasNewWhileAway = false;
+              jumpBtn.classList.remove('show');
+              jumpBtn.textContent = 'Jump to latest';
+            }
+          }, {passive: true});
+        }
+        const tState = window.__atlasTranscript;
+        if (tState.inFlight) return;
+        tState.inFlight = true;
+        const wasNearBottom = (list.scrollTop + list.clientHeight) >= (list.scrollHeight - 24);
+        const prevScrollTop = list.scrollTop;
         const minutes = document.getElementById('previewMinutes').value;
         const search = document.getElementById('searchInput').value;
         const includeUnknown = !document.getElementById('hideUnknown').checked;
@@ -1203,27 +1238,83 @@ _HOME_HTML = """
           include_unknown: includeUnknown,
           include_low_confidence: includeLow,
         });
-        const res = await fetch('/transcripts/recent?' + params.toString());
-        const data = await res.json();
-        const list = document.getElementById('transcriptList');
-        list.innerHTML = '';
-        data.rows.forEach((row) => {
-          const item = document.createElement('div');
-          item.className = 'transcript-item' + (row.low_confidence ? ' low' : '');
-          const time = new Date(row.start_ts).toLocaleTimeString();
-          const badge = row.low_confidence ? ' • low' : '';
-          item.innerHTML = `
-            <div class="transcript-meta">
-              <span>${row.speaker}${badge}</span>
-              <span>${time}</span>
-            </div>
-            <div class="transcript-text">${escapeHtml(row.text)}</div>
-          `;
-          list.appendChild(item);
-        });
-        if (!data.rows.length) {
-          list.innerHTML = '<div class="inline">No transcripts in this window.</div>';
+        const queryKey = params.toString();
+        const isNewQuery = queryKey !== tState.lastQueryKey;
+        tState.lastQueryKey = queryKey;
+        if (!list.dataset.loaded) {
+          list.innerHTML = '<div class="inline">Loading transcripts...</div>';
         }
+        statusChip.textContent = 'Live';
+        try {
+          const data = await fetchJson('/transcripts/recent?' + params.toString());
+          const rows = data.rows || [];
+          const last = rows.length ? rows[rows.length - 1] : null;
+          const lastSig = last ? `${last.start_ts}|${last.speaker}|${(last.text || '').slice(0, 64)}` : '';
+          const gotNew = Boolean(tState.lastSig && lastSig && lastSig !== tState.lastSig);
+          list.innerHTML = '';
+          for (const row of rows) {
+            const item = document.createElement('div');
+            item.className = 'transcript-item' + (row.low_confidence ? ' low' : '');
+            const time = new Date(row.start_ts).toLocaleTimeString();
+            const badge = row.low_confidence ? ' • low' : '';
+            item.innerHTML = `
+              <div class="transcript-meta">
+                <span>${escapeHtml(row.speaker)}${badge}</span>
+                <span>${time}</span>
+              </div>
+              <div class="transcript-text">${escapeHtml(row.text)}</div>
+            `;
+            list.appendChild(item);
+          }
+          if (!rows.length) {
+            list.innerHTML = '<div class="inline">No transcripts in this window.</div>';
+          }
+          list.dataset.loaded = '1';
+          tState.lastSig = lastSig;
+
+          if (isNewQuery) {
+            tState.hasNewWhileAway = false;
+            jumpBtn.classList.remove('show');
+            jumpBtn.textContent = 'Jump to latest';
+            // Default behavior: show the most recent content for the standard live view.
+            if ((search || '').trim()) {
+              list.scrollTop = 0;
+            } else {
+              list.scrollTop = list.scrollHeight;
+            }
+          } else if (wasNearBottom) {
+            list.scrollTop = list.scrollHeight;
+          } else {
+            // Keep the user's reading position steady when they're scrolled up.
+            list.scrollTop = prevScrollTop;
+            if (gotNew) {
+              tState.hasNewWhileAway = true;
+              jumpBtn.classList.add('show');
+              jumpBtn.textContent = 'New updates • Jump to latest';
+            }
+          }
+
+          tState.lastOkAt = Date.now();
+          statusChip.textContent = 'Live';
+        } catch (err) {
+          if (!list.dataset.loaded) {
+            list.innerHTML = `<div class="inline">Failed to load transcripts: ${escapeHtml(err.message || 'Unknown error')}</div>`;
+          }
+          statusChip.textContent = 'Live (error)';
+        }
+        finally {
+          tState.inFlight = false;
+        }
+      }
+
+      function jumpToLatest() {
+        const list = document.getElementById('transcriptList');
+        const jumpBtn = document.getElementById('jumpLatest');
+        const tState = window.__atlasTranscript;
+        list.scrollTop = list.scrollHeight;
+        if (tState) tState.hasNewWhileAway = false;
+        jumpBtn.classList.remove('show');
+        jumpBtn.textContent = 'Jump to latest';
       }
 
       document.querySelectorAll('input[name="speakerLock"]').forEach((el) => {
@@ -1235,13 +1326,307 @@ _HOME_HTML = """
       document.getElementById('hideLow').addEventListener('change', loadTranscripts);
 
       refresh();
-      loadDevices();
       loadRecentExports();
       loadTranscripts();
-      setInterval(refresh, 3000);
-      // Live meter is opt-in to avoid macOS mic indicator blinking.
-      setInterval(loadTranscripts, 5000);
-      setInterval(loadRecentExports, 12000);
+      const refreshTimer = setInterval(refresh, 3000);
+      const transcriptTimer = setInterval(loadTranscripts, 5000);
+      const exportTimer = setInterval(loadRecentExports, 12000);
+      window.addEventListener('beforeunload', () => {
+        clearInterval(refreshTimer);
+        clearInterval(transcriptTimer);
+        clearInterval(exportTimer);
+      });
+    </script>
+  </body>
+</html>
+"""
+
+_MIC_HTML = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Mic Settings • Atlas Monitor</title>
+    <style>
+      :root {
+        --bg-primary: radial-gradient(circle at 20% 20%, #0f172a, #030712);
+        --bg-surface: rgba(15, 23, 42, 0.6);
+        --border-glass: rgba(56, 107, 255, 0.35);
+        --text-primary: #e2e8f0;
+        --text-secondary: rgba(226, 232, 240, 0.7);
+        --radius-sm: 8px;
+        --radius-md: 16px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Inter", "Segoe UI", sans-serif;
+        color: var(--text-primary);
+        background: var(--bg-primary);
+        overflow-x: hidden;
+      }
+      .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px 56px; }
+      .top-nav {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 20px;
+        margin-bottom: 24px;
+      }
+      .brand-title {
+        font-size: 1.6rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .brand-subtitle { color: var(--text-secondary); font-size: 0.85rem; margin-top: 6px; }
+      .nav-links { display: flex; gap: 16px; }
+      .nav-link {
+        padding: 8px 14px;
+        border-radius: 999px;
+        color: var(--text-secondary);
+        border: 1px solid transparent;
+        transition: 180ms ease-in-out;
+        text-decoration: none;
+      }
+      .nav-link.active, .nav-link:hover {
+        color: var(--text-primary);
+        border-color: var(--border-glass);
+        background: rgba(91, 141, 255, 0.12);
+      }
+      .panel {
+        position: relative;
+        padding: 22px;
+        border-radius: var(--radius-md);
+        background: var(--bg-surface);
+        border: 1px solid var(--border-glass);
+        box-shadow: 0 30px 80px rgba(8, 12, 24, 0.7);
+        backdrop-filter: blur(18px);
+        overflow: hidden;
+      }
+      .panel::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: linear-gradient(140deg, rgba(255, 255, 255, 0.12), transparent 35%);
+        pointer-events: none;
+        opacity: 0.6;
+      }
+      .panel > * { position: relative; z-index: 1; }
+      .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+      h1, h2 { margin: 0; }
+      h1 { font-size: 1.4rem; }
+      .muted { color: var(--text-secondary); font-size: 0.85rem; margin: 0; }
+      .input-row { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 10px; align-items: end; margin-top: 14px; }
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(255,255,255,0.08);
+        color: var(--text-primary);
+      }
+      .btn {
+        border: 1px solid var(--border-glass);
+        background: rgba(255,255,255,0.04);
+        color: var(--text-primary);
+        padding: 10px 16px;
+        border-radius: var(--radius-sm);
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .btn.ghost { background: transparent; }
+      .btn.primary { border: none; background: linear-gradient(135deg, #5b8dff, #7a6bff); }
+      .button-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+      .meter { margin-top: 14px; height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; }
+      .meter-bar { height: 100%; width: 8%; background: linear-gradient(90deg, #5b8dff, #4bde97); transition: width 120ms ease-in-out; }
+      .alert {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(255, 107, 107, 0.4);
+        background: rgba(255, 107, 107, 0.18);
+        color: #ffe3e3;
+        display: none;
+      }
+      .alert.show { display: block; }
+      .chip {
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        border: 1px solid var(--border-glass);
+        color: var(--text-secondary);
+        background: rgba(91, 141, 255, 0.1);
+      }
+      @media (max-width: 900px) {
+        .top-nav { grid-template-columns: 1fr; }
+        .input-row { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body data-theme="dark">
+    <div class="page">
+      <header class="top-nav">
+        <div>
+          <div class="brand-title">Atlas Monitor</div>
+          <div class="brand-subtitle">Mic settings</div>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Overview</a>
+          <a class="nav-link" href="/setup">Setup</a>
+          <a class="nav-link active" href="/mic">Mic</a>
+          <a class="nav-link" href="/admin">Admin</a>
+        </nav>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h1>Microphone Settings</h1>
+          <div class="chip" id="deviceStatus">Loading</div>
+        </div>
+        <p class="muted">Use this page for device selection and one-off signal checks. Live meter is opt-in.</p>
+        <div class="input-row">
+          <select id="deviceSelect"></select>
+          <button class="btn primary" onclick="saveDevice()">Save device</button>
+        </div>
+        <div class="meter">
+          <div class="meter-bar" id="levelBar"></div>
+        </div>
+        <div class="button-row">
+          <button class="btn ghost" id="toggleMeter" onclick="toggleMeter()">Enable live meter</button>
+          <button class="btn" onclick="testMic()">Test 3s</button>
+          <div class="muted" id="levelText">Level idle</div>
+          <div class="muted" id="testResult"></div>
+        </div>
+        <div class="alert" id="error"></div>
+      </section>
+    </div>
+    <script>
+      const errorEl = document.getElementById("error");
+      let meterTimer = null;
+
+      function showError(msg) {
+        if (!msg) {
+          errorEl.textContent = "";
+          errorEl.classList.remove("show");
+          return;
+        }
+        errorEl.textContent = msg;
+        errorEl.classList.add("show");
+      }
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!response.ok) {
+          throw new Error(data.detail || `Request failed (${response.status})`);
+        }
+        return data;
+      }
+
+      async function loadDevices() {
+        const select = document.getElementById("deviceSelect");
+        select.innerHTML = '<option>Loading devices...</option>';
+        try {
+          const data = await fetchJson('/audio/devices');
+          select.innerHTML = '';
+          const autoOption = document.createElement('option');
+          autoOption.value = 'auto';
+          autoOption.textContent = 'Auto (first available)';
+          select.appendChild(autoOption);
+          for (const dev of data.devices || []) {
+            const option = document.createElement('option');
+            option.value = dev.name;
+            option.textContent = `${dev.name} • ${dev.hostapi}`;
+            select.appendChild(option);
+          }
+          select.value = data.selected || 'auto';
+          document.getElementById('deviceStatus').textContent = data.selected || 'Auto';
+          showError("");
+        } catch (err) {
+          document.getElementById('deviceStatus').textContent = 'Unavailable';
+          select.innerHTML = '<option>No devices available</option>';
+          showError(err.message || 'Failed to load devices.');
+        }
+      }
+
+      async function saveDevice() {
+        const value = document.getElementById('deviceSelect').value;
+        try {
+          await fetchJson('/audio/device', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: value}),
+          });
+          document.getElementById('deviceStatus').textContent = value === 'auto' ? 'Auto' : value;
+          showError("");
+        } catch (err) {
+          showError(err.message || 'Failed to save device.');
+        }
+      }
+
+      async function pollLevel() {
+        try {
+          const data = await fetchJson('/audio/level');
+          const bar = document.getElementById('levelBar');
+          const text = document.getElementById('levelText');
+          if (data.busy) {
+            bar.style.width = '5%';
+            text.textContent = 'Paused while recorder is active';
+            return;
+          }
+          const rms = Math.min(1, data.rms || 0);
+          bar.style.width = Math.min(100, Math.round(rms * 140)) + '%';
+          text.textContent = `RMS ${(rms * 100).toFixed(1)}% • SNR ${data.snr_db} dB • Noise ${data.noise_floor} dBFS`;
+        } catch (err) {
+          showError(err.message || 'Failed to read audio level.');
+        }
+      }
+
+      function toggleMeter() {
+        const btn = document.getElementById('toggleMeter');
+        if (meterTimer) {
+          clearInterval(meterTimer);
+          meterTimer = null;
+          btn.textContent = 'Enable live meter';
+          document.getElementById('levelText').textContent = 'Level idle';
+          document.getElementById('levelBar').style.width = '8%';
+          return;
+        }
+        pollLevel();
+        meterTimer = setInterval(pollLevel, 1400);
+        btn.textContent = 'Stop meter';
+      }
+
+      async function testMic() {
+        const output = document.getElementById('testResult');
+        output.textContent = 'Testing...';
+        try {
+          const data = await fetchJson('/audio/test', {method: 'POST'});
+          output.textContent = data.ok ? `SNR ${data.snr_db} dB` : 'Test failed (device busy)';
+          showError("");
+        } catch (err) {
+          output.textContent = 'Test failed';
+          showError(err.message || 'Failed to run mic test.');
+        }
+      }
+
+      loadDevices();
+      window.addEventListener('beforeunload', () => {
+        if (meterTimer) {
+          clearInterval(meterTimer);
+        }
+      });
     </script>
   </body>
 </html>
@@ -1254,9 +1639,6 @@ _SETUP_HTML = """
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Setup • Atlas Monitor</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com"/>
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
     <style>
       :root {
         --bg-primary: radial-gradient(circle at 20% 20%, #0f172a, #030712);
@@ -1279,9 +1661,10 @@ _SETUP_HTML = """
         font-family: "Inter", "Segoe UI", sans-serif;
         color: var(--text-primary);
         background: var(--bg-primary);
+        overflow-x: hidden;
       }
       a { color: inherit; text-decoration: none; }
-      .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px 56px; }
+      .page { max-width: 1400px; margin: 0 auto; padding: 28px 24px 56px; }
       .top-nav {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -1360,6 +1743,10 @@ _SETUP_HTML = """
         background: linear-gradient(135deg, #5b8dff, #7a6bff);
       }
       .btn.ghost { background: transparent; }
+      .btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
       .button-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
       .meter { margin-top: 14px; height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; }
@@ -1379,8 +1766,9 @@ _SETUP_HTML = """
           <div class="brand-subtitle">Speaker enrollment & reference lock</div>
         </div>
         <nav class="nav-links">
-          <a class="nav-link" href="/">Recorder</a>
+          <a class="nav-link" href="/">Overview</a>
           <a class="nav-link active" href="/setup">Setup</a>
+          <a class="nav-link" href="/mic">Mic</a>
           <a class="nav-link" href="/admin">Admin</a>
         </nav>
       </header>
@@ -1393,7 +1781,8 @@ _SETUP_HTML = """
         <p class="muted">Reroll clears both embeddings and unlocks re-enrollment. Lock reference to prevent changes.</p>
         <div class="button-row">
           <button class="btn" onclick="rerollReferences()">Reroll references</button>
-          <button class="btn ghost" onclick="lockReferences()">Lock reference</button>
+          <button class="btn ghost" id="lockBtn" onclick="lockReferences()">Lock reference</button>
+          <button class="btn ghost" id="stopEnrollBtn" style="display:none;" onclick="stopEnrollment()">STOP RECORDING</button>
         </div>
         <div class="meter">
           <div class="meter-bar" id="levelBar"></div>
@@ -1401,6 +1790,7 @@ _SETUP_HTML = """
         <div class="button-row">
           <button class="btn ghost" id="toggleMeter" onclick="toggleMeter()">Enable live meter</button>
           <div class="muted" id="levelText">Live level --</div>
+          <div class="muted" id="enrollTimer">Enrollment timer --</div>
         </div>
       </section>
 
@@ -1412,7 +1802,7 @@ _SETUP_HTML = """
           </div>
           <p class="muted">Speak naturally for 20–40 seconds. Keep a steady distance to the mic.</p>
           <div class="button-row">
-            <button class="btn primary" onclick="enroll('/setup/enroll/hugo', 'Hugo')">Re-enroll Hugo</button>
+            <button class="btn primary" data-enroll onclick="enroll('/setup/enroll/hugo', 'Hugo')">Re-enroll Hugo</button>
             <button class="btn ghost" onclick="clearEnroll('hugo', 'Hugo')">Clear</button>
           </div>
           <div class="result" id="resultHugo"></div>
@@ -1424,7 +1814,7 @@ _SETUP_HTML = """
           </div>
           <p class="muted">Speak in your normal cadence for the full duration.</p>
           <div class="button-row">
-            <button class="btn primary" onclick="enroll('/setup/enroll/leon', 'Leon')">Re-enroll Leon</button>
+            <button class="btn primary" data-enroll onclick="enroll('/setup/enroll/leon', 'Leon')">Re-enroll Leon</button>
             <button class="btn ghost" onclick="clearEnroll('leon', 'Leon')">Clear</button>
           </div>
           <div class="result" id="resultLeon"></div>
@@ -1432,55 +1822,189 @@ _SETUP_HTML = """
       </section>
     </div>
     <script>
+      const setupError = document.createElement('div');
+      setupError.className = 'result warn';
+      setupError.style.marginTop = '10px';
+      document.querySelector('.panel').appendChild(setupError);
+      const lockBtn = document.getElementById('lockBtn');
+      const stopEnrollBtn = document.getElementById('stopEnrollBtn');
+      const enrollTimerText = document.getElementById('enrollTimer');
+      const enrollButtons = Array.from(document.querySelectorAll('[data-enroll]'));
+      let meterTimer = null;
+      let enrollmentTimer = null;
+      let activeEnrollment = null;
+      let enrollmentSeconds = 30;
+
+      function showSetupError(msg) {
+        setupError.textContent = msg || '';
+      }
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!response.ok) {
+          throw new Error(data.detail || `Request failed (${response.status})`);
+        }
+        return data;
+      }
+
+      function formatClock(totalSeconds) {
+        const whole = Math.max(0, Math.floor(totalSeconds));
+        const mins = Math.floor(whole / 60).toString().padStart(2, '0');
+        const secs = (whole % 60).toString().padStart(2, '0');
+        return `${mins}:${secs}`;
+      }
+
       function setBadge(id, ok) {
         const el = document.getElementById(id);
         if (!el) return;
         el.textContent = ok ? 'Enrolled' : 'Not enrolled';
         el.className = 'badge ' + (ok ? 'good' : 'warn');
       }
+
+      function setEnrollUiActive(active) {
+        for (const btn of enrollButtons) {
+          btn.disabled = active;
+        }
+        stopEnrollBtn.style.display = active ? 'inline-block' : 'none';
+      }
+
+      function updateEnrollTimer() {
+        if (!activeEnrollment) {
+          enrollTimerText.textContent = `Enrollment timer ${formatClock(enrollmentSeconds)} target`;
+          return;
+        }
+        const elapsed = (Date.now() - activeEnrollment.startedAt) / 1000;
+        const remaining = Math.max(0, enrollmentSeconds - elapsed);
+        enrollTimerText.textContent = `Recording ${activeEnrollment.name} ${formatClock(elapsed)} / ${formatClock(enrollmentSeconds)} • ${formatClock(remaining)} left`;
+      }
+
+      function startEnrollmentTimer(name) {
+        activeEnrollment = {name, startedAt: Date.now()};
+        updateEnrollTimer();
+        if (enrollmentTimer) {
+          clearInterval(enrollmentTimer);
+        }
+        enrollmentTimer = setInterval(updateEnrollTimer, 250);
+      }
+
+      function stopEnrollmentTimer() {
+        activeEnrollment = null;
+        if (enrollmentTimer) {
+          clearInterval(enrollmentTimer);
+          enrollmentTimer = null;
+        }
+        updateEnrollTimer();
+      }
+
       async function refreshStatus() {
-        const res = await fetch('/status');
-        const data = await res.json();
-        setBadge('statusHugo', data.enrolled && data.enrolled.Hugo);
-        setBadge('statusLeon', data.enrolled && data.enrolled.Leon);
-        const ref = document.getElementById('refState');
-        ref.textContent = data.reference_locked ? 'Locked' : 'Unlocked';
-        ref.className = 'badge ' + (data.reference_locked ? 'good' : 'warn');
+        try {
+          const data = await fetchJson('/status');
+          enrollmentSeconds = Math.max(1, Number(data.enrollment_seconds) || enrollmentSeconds);
+          setBadge('statusHugo', data.enrolled && data.enrolled.Hugo);
+          setBadge('statusLeon', data.enrolled && data.enrolled.Leon);
+          const bothEnrolled = Boolean(data.enrolled && data.enrolled.Hugo && data.enrolled.Leon);
+          lockBtn.disabled = !bothEnrolled;
+          lockBtn.title = bothEnrolled ? '' : 'Enroll both Hugo and Leon before locking.';
+          const ref = document.getElementById('refState');
+          ref.textContent = data.reference_locked ? 'Locked' : 'Unlocked';
+          ref.className = 'badge ' + (data.reference_locked ? 'good' : 'warn');
+          showSetupError('');
+        } catch (err) {
+          showSetupError(err.message || 'Failed to load setup status.');
+        }
       }
       async function enroll(url, name) {
+        if (activeEnrollment) {
+          showSetupError('Another enrollment is already recording.');
+          return;
+        }
         const resultEl = document.getElementById('result' + name);
         resultEl.textContent = 'Recording...';
         resultEl.className = 'result';
-        const res = await fetch(url, {method:'POST'});
-        const data = await res.json();
-        if (data.status === 'ok') {
-          const snr = Number.isFinite(data.snr_db) ? data.snr_db.toFixed(1) : '--';
-          const duration = Number.isFinite(data.duration_sec) ? data.duration_sec.toFixed(1) : '--';
-          resultEl.textContent = 'Done. ' + duration + 's, SNR ' + snr + ' dB.';
-          if (data.quality_ok === false) {
-            resultEl.textContent += ' Low quality — please re-enroll.';
+        setEnrollUiActive(true);
+        startEnrollmentTimer(name);
+        try {
+          const data = await fetchJson(url, {method: 'POST'});
+          if (data.status === 'ok') {
+            const snr = Number.isFinite(data.snr_db) ? data.snr_db.toFixed(1) : '--';
+            const duration = Number.isFinite(data.duration_sec) ? data.duration_sec.toFixed(1) : '--';
+            resultEl.textContent = 'Done. ' + duration + 's, SNR ' + snr + ' dB.';
+            if (data.quality_ok === false) {
+              resultEl.textContent += ' Low quality — please re-enroll.';
+              resultEl.className = 'result warn';
+            }
+          } else if (data.status === 'cancelled') {
+            const duration = Number.isFinite(data.duration_sec) ? data.duration_sec.toFixed(1) : '--';
+            resultEl.textContent = `Stopped at ${duration}s. Enrollment not saved.`;
             resultEl.className = 'result warn';
+          } else {
+            resultEl.textContent = data.detail || 'Error.';
           }
-        } else {
-          resultEl.textContent = data.detail || 'Error.';
+          showSetupError('');
+        } catch (err) {
+          resultEl.textContent = err.message || 'Enrollment failed.';
+          resultEl.className = 'result warn';
+          showSetupError(err.message || 'Enrollment failed.');
+        } finally {
+          stopEnrollmentTimer();
+          setEnrollUiActive(false);
         }
-        refreshStatus();
+        await refreshStatus();
       }
+
+      async function stopEnrollment() {
+        if (!activeEnrollment) {
+          return;
+        }
+        try {
+          const data = await fetchJson('/setup/enroll/stop', {method: 'POST'});
+          if (data.status === 'stopping') {
+            showSetupError(`Stopping ${data.speaker || 'enrollment'}...`);
+          }
+        } catch (err) {
+          showSetupError(err.message || 'Failed to stop enrollment.');
+        }
+      }
+
       async function clearEnroll(speaker, name) {
-        await fetch(`/setup/clear/${speaker}`, {method:'POST'});
-        const resultEl = document.getElementById('result' + name);
-        resultEl.textContent = 'Cleared.';
-        refreshStatus();
+        try {
+          await fetchJson(`/setup/clear/${speaker}`, {method: 'POST'});
+          const resultEl = document.getElementById('result' + name);
+          resultEl.textContent = 'Cleared.';
+          showSetupError('');
+        } catch (err) {
+          showSetupError(err.message || 'Failed to clear enrollment.');
+        }
+        await refreshStatus();
       }
       async function rerollReferences() {
-        await fetch('/setup/reroll', {method:'POST'});
-        refreshStatus();
+        try {
+          await fetchJson('/setup/reroll', {method: 'POST'});
+          showSetupError('');
+        } catch (err) {
+          showSetupError(err.message || 'Failed to reroll references.');
+        }
+        await refreshStatus();
       }
       async function lockReferences() {
-        await fetch('/setup/lock_reference', {method:'POST'});
-        refreshStatus();
+        if (lockBtn.disabled) {
+          showSetupError('Enroll both Hugo and Leon before locking.');
+          return;
+        }
+        try {
+          await fetchJson('/setup/lock_reference', {method: 'POST'});
+          showSetupError('');
+        } catch (err) {
+          showSetupError(err.message || 'Failed to lock references.');
+        }
+        await refreshStatus();
       }
-      let meterTimer = null;
 
       function toggleMeter() {
         const btn = document.getElementById('toggleMeter');
@@ -1498,22 +2022,35 @@ _SETUP_HTML = """
       }
 
       async function pollLevel() {
-        const res = await fetch('/audio/level');
-        const data = await res.json();
-        const bar = document.getElementById('levelBar');
-        const text = document.getElementById('levelText');
-        if (data.busy) {
-          bar.style.width = '5%';
-          text.textContent = 'Live level paused (recording)';
-          return;
+        try {
+          const data = await fetchJson('/audio/level');
+          const bar = document.getElementById('levelBar');
+          const text = document.getElementById('levelText');
+          if (data.busy) {
+            bar.style.width = '5%';
+            text.textContent = 'Live level paused (recording)';
+            return;
+          }
+          const rms = Math.min(1, data.rms || 0);
+          bar.style.width = Math.min(100, Math.round(rms * 140)) + '%';
+          text.textContent = `Live level ${(rms * 100).toFixed(1)}% • SNR ${data.snr_db} dB • Noise ${data.noise_floor} dBFS`;
+        } catch (err) {
+          showSetupError(err.message || 'Failed to read mic level.');
         }
-        const rms = Math.min(1, data.rms || 0);
-        bar.style.width = Math.min(100, Math.round(rms * 140)) + '%';
-        text.textContent = `Live level ${(rms * 100).toFixed(1)}% • SNR ${data.snr_db} dB • Noise ${data.noise_floor} dBFS`;
       }
       refreshStatus();
-      setInterval(refreshStatus, 3000);
+      updateEnrollTimer();
+      const setupTimer = setInterval(refreshStatus, 3000);
       // Live meter is opt-in to avoid macOS mic indicator blinking.
+      window.addEventListener('beforeunload', () => {
+        clearInterval(setupTimer);
+        if (meterTimer) {
+          clearInterval(meterTimer);
+        }
+        if (enrollmentTimer) {
+          clearInterval(enrollmentTimer);
+        }
+      });
     </script>
   </body>
 </html>
@@ -1526,9 +2063,6 @@ _ADMIN_HTML = """
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Admin • Atlas Monitor</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com"/>
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
     <style>
       :root {
         --bg-primary: radial-gradient(circle at 20% 20%, #0f172a, #030712);
@@ -1547,8 +2081,9 @@ _ADMIN_HTML = """
         font-family: "Inter", "Segoe UI", sans-serif;
         color: var(--text-primary);
         background: var(--bg-primary);
+        overflow-x: hidden;
       }
-      .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px 56px; }
+      .page { max-width: 1520px; margin: 0 auto; padding: 28px 24px 56px; }
       .top-nav {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -1578,7 +2113,7 @@ _ADMIN_HTML = """
       }
       .panel {
         position: relative;
-        padding: 20px;
+        padding: 22px;
         border-radius: var(--radius-md);
         background: var(--bg-surface);
         border: 1px solid var(--border-glass);
@@ -1637,8 +2172,9 @@ _ADMIN_HTML = """
           <div class="brand-subtitle">Failed segments</div>
         </div>
         <nav class="nav-links">
-          <a class="nav-link" href="/">Recorder</a>
+          <a class="nav-link" href="/">Overview</a>
           <a class="nav-link" href="/setup">Setup</a>
+          <a class="nav-link" href="/mic">Mic</a>
           <a class="nav-link active" href="/admin">Admin</a>
         </nav>
       </header>
@@ -1664,41 +2200,71 @@ _ADMIN_HTML = """
       </section>
     </div>
     <script>
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!response.ok) {
+          throw new Error(data.detail || `Request failed (${response.status})`);
+        }
+        return data;
+      }
+
       async function load() {
-        const res = await fetch('/admin/failed');
-        const data = await res.json();
         const body = document.getElementById('rows');
-        body.innerHTML = '';
-        for (const row of data.rows) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${row.id}</td>
-            <td>${row.start_ts}</td>
-            <td>${row.end_ts}</td>
-            <td>${row.duration_sec.toFixed(1)}s</td>
-            <td>${row.attempts}</td>
-            <td>${row.error || ''}</td>
-            <td>
-              <button class="btn" onclick="retryNow(${row.id})">Retry</button>
-              <button class="btn" onclick="exportZip(${row.id})">Export ZIP</button>
-              <button class="btn danger" onclick="deleteSeg(${row.id})">Delete</button>
-            </td>`;
-          body.appendChild(tr);
+        body.innerHTML = '<tr><td colspan="7">Loading failed segments...</td></tr>';
+        try {
+          const data = await fetchJson('/admin/failed');
+          body.innerHTML = '';
+          for (const row of data.rows || []) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td>${row.id}</td>
+              <td>${row.start_ts}</td>
+              <td>${row.end_ts}</td>
+              <td>${row.duration_sec.toFixed(1)}s</td>
+              <td>${row.attempts}</td>
+              <td>${row.error || ''}</td>
+              <td>
+                <button class="btn" onclick="retryNow(${row.id})">Retry</button>
+                <button class="btn" onclick="exportZip(${row.id})">Export ZIP</button>
+                <button class="btn danger" onclick="deleteSeg(${row.id})">Delete</button>
+              </td>`;
+            body.appendChild(tr);
+          }
+          if (!(data.rows || []).length) {
+            body.innerHTML = '<tr><td colspan="7">No failed segments.</td></tr>';
+          }
+        } catch (err) {
+          body.innerHTML = `<tr><td colspan="7">Failed to load: ${err.message || 'Unknown error'}</td></tr>`;
         }
       }
       async function retryNow(id) {
-        await fetch(`/admin/segment/${id}/retry`, {method:'POST'});
-        load();
+        try {
+          await fetchJson(`/admin/segment/${id}/retry`, {method: 'POST'});
+        } catch (_) {
+          // Keep the UI responsive even on transient retry errors.
+        }
+        await load();
       }
       async function deleteSeg(id) {
-        await fetch(`/admin/segment/${id}/delete`, {method:'POST'});
-        load();
+        try {
+          await fetchJson(`/admin/segment/${id}/delete`, {method: 'POST'});
+        } catch (_) {
+          // Keep the UI responsive even on transient delete errors.
+        }
+        await load();
       }
       function exportZip(id) {
         window.location.href = `/admin/segment/${id}/export`;
       }
       load();
-      setInterval(load, 5000);
+      const adminTimer = setInterval(load, 5000);
+      window.addEventListener('beforeunload', () => clearInterval(adminTimer));
     </script>
   </body>
 </html>

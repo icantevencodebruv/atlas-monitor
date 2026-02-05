@@ -261,6 +261,18 @@ class Database:
             )
             return cur.fetchone()
 
+    def find_export(self, range_label: str, start_ts: str, end_ts: str):
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM exports
+                WHERE range_label = ? AND start_ts = ? AND end_ts = ?
+                LIMIT 1
+                """,
+                (range_label, start_ts, end_ts),
+            )
+            return cur.fetchone()
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
