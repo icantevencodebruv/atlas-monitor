@@ -27,7 +27,8 @@
                               /__________\
 </pre>
 
-![Project Screenshot](./assets/images/atlas-monitor-github.svg)
+![Project Screenshot]<img width="1200" height="245" alt="image" src="https://github.com/user-attachments/assets/2b4fe94e-9d54-44ab-8257-c676d17b504c" />
+)
 
 **Last update:** 05.02.2026
 
