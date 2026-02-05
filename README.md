@@ -1,6 +1,13 @@
+![Project Screenshot](./assets/images/atlas-monitor-github.svg)
 
-<img width="1200" height="245" alt="image" src="https://github.com/user-attachments/assets/2b4fe94e-9d54-44ab-8257-c676d17b504c" />)
-</pre>
+# Atlas Monitor
+
+Offline-only recorder with incremental transcription + diarization, built for two fixed speakers (Hugo, Leon) and a minimal local UI. No telemetry, no network calls at runtime.
+
+<details>
+<summary>ASCII Banner</summary>
+
+<pre>
     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     ┃   █████╗ ████████╗██╗      █████╗ ███████╗     ███╗   ███╗ ██████╗      ┃
     ┃  ██╔══██╗╚══██╔══╝██║     ██╔══██╗██╔════╝     ████╗ ████║██╔═══██╗     ┃
@@ -28,9 +35,10 @@
                                ___|__|___
                               /__________\
 </pre>
-**Last update:** 05.02.2026
 
-Offline-only recorder with incremental transcription + diarization, built for two fixed speakers (Hugo, Leon) and a minimal local UI. No telemetry, no network calls at runtime.
+</details>
+
+**Last update:** 05.02.2026
 
 ---
 
