@@ -1,0 +1,17 @@
+fastapi==0.115.5
+uvicorn==0.32.0
+pydantic==2.9.2
+PyYAML==6.0.2
+sounddevice==0.5.1
+numpy>=1.26.4,<2.0
+webrtcvad==2.0.10
+python_speech_features==0.6
+tzdata==2024.1
+silero-vad==5.1.2
+fasttext-wheel==0.9.2
+vosk==0.3.44
+torch==2.6.0
+torchaudio==2.6.0
+pyannote.audio==3.3.2
+huggingface_hub==0.28.1
+transformers==4.49.0

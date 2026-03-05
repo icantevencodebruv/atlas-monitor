@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.DS_Store
+Thumbs.db
+
+# runtime data
+/data/
+/models/
+/wheelhouse/
+/offline_bundle/
+
+# logs
+*.log
+
+# audio/export
+/data/audio/
+/data/exports/
+/data/logs/

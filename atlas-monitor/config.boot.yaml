@@ -1,0 +1,84 @@
+app:
+  host: 127.0.0.1
+  port: 7070
+  open_browser: false
+storage:
+  db_path: ./data/app.db
+  audio_dir: ./data/audio
+  exports_dir: ./data/exports
+  logs_dir: ./data/logs
+audio:
+  sample_rate: 16000
+  channels: 1
+  segment_seconds: 30
+  device_hostapi_preference:
+    windows: WASAPI
+    macos: Core Audio
+  input_device_name: Elgato Wave:3
+work_hours:
+  timezone: Europe/Berlin
+  enabled: false
+  work_days:
+  - MON
+  - TUE
+  - WED
+  - THU
+  - FRI
+  work_start: 09:00
+  work_end: '18:00'
+asr:
+  backend: pipeline_local
+  required_languages:
+  - de
+  - en
+  windows_nemo_parakeet_cuda:
+    model_name: ''
+    languages:
+    - en
+  mac_parakeet_mlx:
+    model_id: mlx-community/parakeet-tdt-0.6b-v3
+    hf_cache_dir: ./models/parakeet_mlx
+    hf_cache_dir_parent: ./models
+    hf_offline: false
+    languages:
+    - en
+    - de
+  whisper_cpp:
+    model_path: ./models/ggml-small.bin
+    language: auto
+    binary_path: /opt/homebrew/bin/whisper-cli
+  pipeline_local:
+    asr_engine: vosk
+    silero_model_path: ./models/silero/silero_vad.jit
+    silero_threshold: 0.5
+    silero_min_speech_ms: 250
+    silero_min_silence_ms: 120
+    silero_speech_pad_ms: 80
+    merge_gap_sec: 0.35
+    fasttext_model_path: ./models/lid.176.bin
+    vosk_model_en_path: ./models/vosk/vosk-model-en
+    vosk_model_de_path: ./models/vosk/vosk-model-de
+    wav2vec2_model_en_path: ./models/wav2vec2/wav2vec2-en
+    wav2vec2_model_de_path: ./models/wav2vec2/wav2vec2-de
+    pyannote_model_path: pyannote/speaker-diarization-3.1
+    pyannote_auth_token: ''
+    hf_cache_dir: ./models/hf_cache
+    hf_offline: false
+transcription:
+  vad_aggressiveness: 2
+  min_utterance_sec: 0.6
+  max_utterance_sec: 30.0
+  max_silence_sec: 0.8
+  enrollment_seconds: 30
+diarization:
+  max_distance: 0.25
+  min_margin: 0.05
+  require_both_enrolled: true
+  enrollment_min_snr_db: 12.0
+  reference_locked: true
+retry:
+  enabled: true
+  max_attempts: 5
+  base_backoff_sec: 30
+  max_backoff_sec: 900
+  poll_interval_sec: 15
