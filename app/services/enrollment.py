@@ -9,7 +9,7 @@ import numpy as np
 import sounddevice as sd
 
 from app.services.diarization import compute_embedding
-from app.services.audio_utils import write_wav_int16
+from app.audio.utils import write_wav_int16
 
 logger = logging.getLogger(__name__)
 

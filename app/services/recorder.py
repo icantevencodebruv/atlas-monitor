@@ -9,8 +9,8 @@ from typing import Optional, Callable
 import numpy as np
 import sounddevice as sd
 
-from app.db.database import Database
-from app.services.audio_utils import write_wav_int16
+from app.database import Database
+from app.audio.utils import write_wav_int16
 
 logger = logging.getLogger(__name__)
 

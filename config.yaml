@@ -65,3 +65,7 @@ retry:
   base_backoff_sec: 30
   max_backoff_sec: 900
   poll_interval_sec: 15
+llm_qa:
+  enabled: true
+  model_path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  max_tokens: 256

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from app.db.database import Database
+from app.database import Database
 
 
 def test_transcript_ordering(tmp_path):

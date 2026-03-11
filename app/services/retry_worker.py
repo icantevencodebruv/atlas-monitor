@@ -3,7 +3,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app.db.database import Database
+from app.database import Database
 
 logger = logging.getLogger(__name__)
 

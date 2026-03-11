@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app.config import Config
-from app.db.database import Database
+from app.database import Database
 from app.services.exporter import compute_workday_range
 from app.services.scheduling import WorkHoursScheduler
 

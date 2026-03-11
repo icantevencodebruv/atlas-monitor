@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 import numpy as np
 
 from app.config import Config
-from app.db.database import Database
-from app.services.audio_utils import write_wav_int16
+from app.database import Database
+from app.audio.utils import write_wav_int16
 from app.services.diarization import SpeakerIdentifier
 from app.services.transcription import TranscriptionWorker
 from app.services.vad import VadSegment

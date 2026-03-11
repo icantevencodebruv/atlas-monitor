@@ -85,6 +85,12 @@ class RetryConfig(BaseModel):
     poll_interval_sec: int = 15
 
 
+class LLMQAConfig(BaseModel):
+    enabled: bool = False
+    model_path: str = ""
+    max_tokens: int = 256
+
+
 class Config(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -94,6 +100,7 @@ class Config(BaseModel):
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    llm_qa: LLMQAConfig = Field(default_factory=LLMQAConfig)
 
 
 def load_config(path: str) -> Config:

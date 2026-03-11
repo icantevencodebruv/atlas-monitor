@@ -8,19 +8,27 @@ from typing import List, Tuple
 
 import numpy as np
 
-from app.db.database import Database
-from app.services.audio_utils import read_wav_int16, write_wav_int16
+from app.database import Database
+from app.audio.utils import read_wav_int16, write_wav_int16
 from app.services.diarization import SpeakerIdentifier, compute_embedding
+from app.services.transcript_qa import TranscriptQA
 from app.services.vad import vad_split
 
 logger = logging.getLogger(__name__)
 
 
 NON_SPEECH_PATTERNS = [
-    r"^\\s*\\[.*\\]\\s*$",
-    r"^\\s*\\(.*\\)\\s*$",
-    r"^\\s*\\*.*\\*\\s*$",
-    r"\\b(blank audio|music|musik|musique|typing|keyboard|clacking|scissors|cough)\\b",
+    r"^\s*\[.*\]\s*$",
+    r"^\s*\(.*\)\s*$",
+    r"^\s*\*.*\*\s*$",
+    r"\b(blank audio|music|musik|musique|typing|keyboard|clacking|scissors|cough)\b",
+    # YouTube / ASR boilerplate hallucinations
+    r"\bthank\s+you\s+for\s+(watching|viewing)\b",
+    r"\bthanks?\s+for\s+watching\b",
+    r"\bsubtitles?\s+by\b",
+    r"\blike\s+and\s+subscribe\b",
+    r"\bsubscribe\s+(for\s+more|to\s+my)\b",
+    r"\bdon.t\s+forget\s+to\s+(like|subscribe|comment)\b",
 ]
 
 
@@ -59,6 +67,7 @@ class TranscriptionWorker:
         self._diarizer = diarizer
         self._config = config
         self._state = state
+        self._qa = TranscriptQA(config.llm_qa.model_dump())
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -124,6 +133,9 @@ class TranscriptionWorker:
             had_text = True
             if is_non_speech(text):
                 continue
+            qa_result = self._qa.evaluate(speaker, text.strip())
+            if qa_result.action == "filtered":
+                continue
             frag_start = datetime.fromisoformat(segment["start_ts"]) + timedelta(seconds=seg.start_sec)
             frag_end = datetime.fromisoformat(segment["start_ts"]) + timedelta(seconds=seg.end_sec)
             fragments.append(
@@ -131,7 +143,8 @@ class TranscriptionWorker:
                     "start_ts": frag_start.isoformat(),
                     "end_ts": frag_end.isoformat(),
                     "speaker": speaker,
-                    "text": text.strip(),
+                    "text": qa_result.corrected_text,
+                    "original_text": qa_result.original_text,
                     "low_confidence": low_confidence,
                 }
             )

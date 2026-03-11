@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
-from app.db.database import Database
+from app.database import Database
 
 
 def _split_sentences(text: str):

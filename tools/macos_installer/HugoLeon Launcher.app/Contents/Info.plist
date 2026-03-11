@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>HugoLeon Launcher</string>
+  <string>Atlas Monitor</string>
   <key>CFBundleIdentifier</key>
-  <string>com.hugoleon.launcher</string>
+  <string>com.atlas-monitor.launcher</string>
   <key>CFBundleVersion</key>
   <string>1.0</string>
   <key>CFBundleShortVersionString</key>
@@ -14,5 +14,9 @@
   <string>launcher</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
 </dict>
 </plist>
